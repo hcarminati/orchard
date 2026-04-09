@@ -66,7 +66,7 @@ git push origin feat/my-feature
 # open a PR targeting dev
 ```
 
-See [CHANGELOG.md](CHANGELOG.md) for what's in flight.
+See [CHANGELOG.md](CHANGELOG.md) for what's in flight and [ROADMAP.md](ROADMAP.md) for what's planned.
 
 ## License
 
