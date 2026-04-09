@@ -1,0 +1,20 @@
+# Binary
+orchard
+orchard_*
+*.exe
+*.out
+
+# Build artifacts
+dist/
+
+# macOS
+.DS_Store
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Go
+vendor/
