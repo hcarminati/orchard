@@ -36,7 +36,8 @@ The foundation everything else builds on.
 - Error surfacing — errored agents pulled to top of tree with message visible
 - Click to focus a node (mouse)
 - **Parallel runs**: sibling nodes sharing a `groupID` are visually grouped with a `parallel × N` label; when one is selected as best it gets a ✓ indicator, the others render as dismissed
-- **Tests**: tree rendering with nested nodes, keyboard navigation, collapse/expand, parallel group display
+- Status filter: toggle to show only running, errored, or all agents in the tree
+- **Tests**: tree rendering with nested nodes, keyboard navigation, collapse/expand, parallel group display, status filter
 
 ### v0.4 — Event log & right panel tabs
 - Right panel becomes tab-based: `Events`, `Files`, and future tabs share the same panel
@@ -64,13 +65,15 @@ The foundation everything else builds on.
 ### v0.7 — File awareness
 - Files tab in the right panel: every file touched this session, by which agent, in order; sourced from `PostToolUse` Write/Edit events
 - Diff viewer: expand any file change to see the diff inline
-- **Tests**: file event parsing, diff rendering
+- `y` to copy any agent output, tool call input/output, or diff to clipboard
+- **Tests**: file event parsing, diff rendering, clipboard copy
 
 ### v0.8 — Search, alerts & config
 - Orchard config file at `~/.config/orchard/config.toml` — port, cost display preferences, watchdog settings
 - `f` to fuzzy search across all agent event logs in the current session
 - Loop/repeat detector: highlight agents calling the same tool repeatedly
 - Watchdog: configurable alert when an agent runs for more than N minutes without output
+- Cost threshold alert: configurable warning when session cost exceeds a set dollar amount
 - Notifications: terminal bell or desktop notification on agent done/error
 - **Tests**: config loading and defaults, search filtering, loop detection logic, watchdog timer
 
@@ -95,7 +98,6 @@ The foundation everything else builds on.
 - Session history: browse past Claude Code sessions from `~/.claude/projects/`
 - Replay mode: play back a recorded session in real time
 - Export: save a full session as markdown or JSON
-- Copy to clipboard: any agent output, tool call, or full session summary
 - **Tests**: session history loading, replay sequencing, export formatting
 
 ### v1.2 — Multi-session observation
@@ -106,8 +108,9 @@ The foundation everything else builds on.
 
 ### v1.3 — Spawn & control
 - From a focused agent node, manually spawn a new subagent with a prompt
+- From a focused agent node, cancel a running agent
 - Builds on the IPC mechanism established in v0.6
-- **Tests**: spawn payload construction, IPC round-trip
+- **Tests**: spawn payload construction, cancel signal, IPC round-trip
 
 ---
 
