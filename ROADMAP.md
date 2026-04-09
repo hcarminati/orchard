@@ -140,6 +140,7 @@ A wizard-style TUI flow for scaffolding a new Claude Code project:
 
 ## Guiding principles
 
+- **One window, full picture** — if understanding a session requires looking in more than one place, Orchard has failed. Every design decision is evaluated against this.
 - **Observability first** — the tree and event log are the core product; everything else is additive
 - **Each version ships value** — every milestone is useful on its own, not just a stepping stone
 - **Tested before closed** — a milestone is not done until its tests are written and passing
