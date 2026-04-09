@@ -40,3 +40,9 @@ Unified visibility in a single terminal window. The user should be able to see m
 - Do not use `interface{}` — use concrete types or typed interfaces
 - Do not add CGO — the binary must cross-compile cleanly
 - Do not write to `~/.claude/` — read only, except for `orchard setup` (v0.6)
+- Do not add runtime dependencies — the binary must be self-contained; nothing for the user to install alongside it
+- Do not overwrite user config — merge and append only; never destructively replace existing settings
+
+## Tests
+
+A milestone is not done until its tests are written and passing. When implementing any feature, write the tests as part of the same change — not after.
