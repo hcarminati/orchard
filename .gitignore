@@ -1,5 +1,5 @@
-# Binary
-orchard
+# Binary (the compiled binary at the repo root, not the cmd/ directory)
+/orchard
 orchard_*
 *.exe
 *.out
