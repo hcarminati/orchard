@@ -31,19 +31,12 @@ go vet ./...                # vet
 - **No globals**: pass dependencies explicitly. The HTTP server sends events over a channel; the TUI reads from it.
 - **Errors**: always handle them. No `_` for errors at package boundaries.
 
-## Current milestone: v0.2 — Data pipeline
+## Design principle
 
-Next things to build:
-1. `internal/agent/` — `Node` struct with ID, name, model, status, parentID, children, tools, skills
-2. `internal/hooks/` — HTTP server on `:7070`, parse incoming hook JSON, emit to a channel
-3. `internal/session/` — scan `~/.claude/projects/`, parse JSONL event files, return initial agent tree
-4. Wire into `internal/ui/` via a `tea.Cmd` that listens on the channel
-
-See ROADMAP.md for the full picture.
+Unified visibility in a single terminal window. The user should be able to see many agents running in parallel and trace the reasoning path from task to result without switching contexts. Every feature decision should make the existing view richer or clearer — cut anything that fragments attention or adds a new place to look.
 
 ## What to avoid
 
-- Do not add features beyond the current milestone scope
 - Do not use `interface{}` — use concrete types or typed interfaces
 - Do not add CGO — the binary must cross-compile cleanly
 - Do not write to `~/.claude/` — read only, except for `orchard setup` (v0.6)
