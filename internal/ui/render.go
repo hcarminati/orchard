@@ -120,6 +120,22 @@ func (m Model) agentsContent() string {
 		return waiting
 	}
 
+	// innerW is the usable width of the agents panel content area.
+	// Each line must fit within this width to prevent wrapping, which would
+	// shift the Y coordinates of subsequent rows and break click-to-row mapping.
+	leftW := m.width * 35 / 100
+	innerW := max(1, leftW-2)
+
+	// truncate clamps a rendered line to innerW visible columns. If the line
+	// is wider than innerW, it is cut to innerW-1 and an ellipsis is appended
+	// so the user knows the name continues beyond the panel edge.
+	truncate := func(line string) string {
+		if lipgloss.Width(line) <= innerW {
+			return line
+		}
+		return lipgloss.NewStyle().MaxWidth(innerW-1).Render(line) + "…"
+	}
+
 	dot := func(c lipgloss.Color) string {
 		return lipgloss.NewStyle().Foreground(c).Render("●")
 	}
@@ -158,9 +174,9 @@ func (m Model) agentsContent() string {
 			if focused {
 				prefix = "> "
 			}
-			lines = append(lines, prefix+icon+lipgloss.NewStyle().Foreground(colorMuted).Render(
+			lines = append(lines, truncate(prefix+icon+lipgloss.NewStyle().Foreground(colorMuted).Render(
 				fmt.Sprintf("parallel × %d", count),
-			))
+			)))
 			continue
 		}
 
@@ -196,7 +212,7 @@ func (m Model) agentsContent() string {
 			if hasWinner && !n.Winner {
 				line = lipgloss.NewStyle().Foreground(colorMuted).Render(line)
 			}
-			lines = append(lines, line)
+			lines = append(lines, truncate(line))
 			continue
 		}
 
@@ -209,7 +225,7 @@ func (m Model) agentsContent() string {
 		if n.Status == agent.StatusError && n.ErrorMsg != "" {
 			line += " " + lipgloss.NewStyle().Foreground(colorRed).Render("✗ "+n.ErrorMsg)
 		}
-		lines = append(lines, line)
+		lines = append(lines, truncate(line))
 	}
 
 	if len(lines) == 0 {

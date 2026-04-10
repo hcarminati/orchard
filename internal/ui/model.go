@@ -229,6 +229,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+	// A mouse event was received. Handle left-button clicks on the Agents panel:
+	// move the cursor to the clicked row and toggle collapse/expand if the node
+	// has children (or is a parallel-group header).
+	case tea.MouseMsg:
+		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+			leftW := m.width * 35 / 100
+			if msg.X < leftW {
+				// Content rows begin after: header (1) + top border (1) + title row (1).
+				const contentTop = headerHeight + 1 + 1
+				idx := msg.Y - contentTop
+				vn := m.visibleNodes()
+				if idx >= 0 && idx < len(vn) {
+					m.cursor = idx
+					// Toggle collapse state, mirroring the space-bar handler.
+					entry := vn[idx]
+					if entry.groupID != "" {
+						m.collapsedGroups[entry.groupID] = !m.collapsedGroups[entry.groupID]
+					} else if node := m.agents.Nodes[entry.id]; node != nil && len(node.Children) > 0 {
+						m.collapsed[entry.id] = !m.collapsed[entry.id]
+					}
+					// Clamp cursor: collapsing may shrink the visible list.
+					if newLen := len(m.visibleNodes()); m.cursor >= newLen {
+						m.cursor = max(0, newLen-1)
+					}
+				}
+			}
+		}
+
 	// A hook event arrived from the HTTP server.
 	case hookEventMsg:
 		e := msg.event

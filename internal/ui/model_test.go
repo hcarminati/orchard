@@ -1176,3 +1176,156 @@ func TestFilter_FooterShowsCurrentMode(t *testing.T) {
 		t.Errorf("expected 'filter:errored' in footer after second f, got:\n%s", view)
 	}
 }
+
+// --- Mouse click tests ---
+
+// contentTop is the Y offset where agent tree content rows begin:
+// header (1) + top border (1) + title row (1) = 3.
+const contentTop = headerHeight + 1 + 1
+
+// mouseClick builds a left-button press MouseMsg at the given screen coordinates.
+func mouseClick(x, y int) tea.MouseMsg {
+	return tea.MouseMsg{
+		X:      x,
+		Y:      y,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+	}
+}
+
+func TestUpdate_MouseClick_MovesCursorToClickedRow(t *testing.T) {
+	nodes := []agent.Node{
+		{ID: "a", Name: "agent-a", Status: agent.StatusRunning},
+		{ID: "b", Name: "agent-b", Status: agent.StatusRunning},
+		{ID: "c", Name: "agent-c", Status: agent.StatusRunning},
+	}
+	m := New(nodes, nil)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = next.(Model)
+
+	// Click on the third row (index 2).
+	next, _ = m.Update(mouseClick(5, contentTop+2))
+	if next.(Model).cursor != 2 {
+		t.Errorf("expected cursor 2 after clicking row 2, got %d", next.(Model).cursor)
+	}
+}
+
+func TestUpdate_MouseClick_AlreadySelectedLeaf_IsNoop(t *testing.T) {
+	nodes := []agent.Node{
+		{ID: "a", Name: "agent-a", Status: agent.StatusRunning},
+		{ID: "b", Name: "agent-b", Status: agent.StatusRunning},
+	}
+	m := New(nodes, nil)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = next.(Model)
+
+	// Navigate to leaf row 1.
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	m = next.(Model)
+	if m.cursor != 1 {
+		t.Fatalf("expected cursor 1 after j, got %d", m.cursor)
+	}
+
+	// Click the already-selected leaf row — cursor must stay the same.
+	next, _ = m.Update(mouseClick(5, contentTop+1))
+	if next.(Model).cursor != 1 {
+		t.Errorf("expected cursor to remain 1 after clicking already-selected leaf, got %d", next.(Model).cursor)
+	}
+}
+
+func TestUpdate_MouseClick_TogglesCollapseOnNodeWithChildren(t *testing.T) {
+	parent := agent.Node{ID: "p", Name: "parent", Status: agent.StatusRunning}
+	child := agent.Node{ID: "c", Name: "child", ParentID: "p", Status: agent.StatusRunning}
+	m := New([]agent.Node{parent, child}, nil)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = next.(Model)
+
+	// Initially expanded: two visible rows (parent + child).
+	if len(m.visibleNodes()) != 2 {
+		t.Fatalf("expected 2 visible nodes initially, got %d", len(m.visibleNodes()))
+	}
+
+	// Click the parent row — should collapse it.
+	next, _ = m.Update(mouseClick(5, contentTop+0))
+	m = next.(Model)
+	if len(m.visibleNodes()) != 1 {
+		t.Errorf("expected 1 visible node after collapsing parent by click, got %d", len(m.visibleNodes()))
+	}
+
+	// Click the parent row again — should expand it.
+	next, _ = m.Update(mouseClick(5, contentTop+0))
+	m = next.(Model)
+	if len(m.visibleNodes()) != 2 {
+		t.Errorf("expected 2 visible nodes after expanding parent by click, got %d", len(m.visibleNodes()))
+	}
+}
+
+func TestUpdate_MouseClick_TogglesCollapseOnGroupHeader(t *testing.T) {
+	nodes := []agent.Node{
+		{ID: "a", Name: "agent-a", GroupID: "g1", Status: agent.StatusRunning},
+		{ID: "b", Name: "agent-b", GroupID: "g1", Status: agent.StatusRunning},
+	}
+	m := New(nodes, nil)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = next.(Model)
+
+	// Initially: header + 2 members = 3 visible rows.
+	if len(m.visibleNodes()) != 3 {
+		t.Fatalf("expected 3 visible nodes initially, got %d", len(m.visibleNodes()))
+	}
+
+	// Click the group header row (index 0) — should collapse the group.
+	next, _ = m.Update(mouseClick(5, contentTop+0))
+	m = next.(Model)
+	if len(m.visibleNodes()) != 1 {
+		t.Errorf("expected 1 visible node after collapsing group by click, got %d", len(m.visibleNodes()))
+	}
+
+	// Click again — should expand.
+	next, _ = m.Update(mouseClick(5, contentTop+0))
+	m = next.(Model)
+	if len(m.visibleNodes()) != 3 {
+		t.Errorf("expected 3 visible nodes after expanding group by click, got %d", len(m.visibleNodes()))
+	}
+}
+
+func TestUpdate_MouseClick_OutsideAgentsPanel_NoEffect(t *testing.T) {
+	nodes := []agent.Node{
+		{ID: "a", Name: "agent-a", Status: agent.StatusRunning},
+		{ID: "b", Name: "agent-b", Status: agent.StatusRunning},
+	}
+	m := New(nodes, nil)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = next.(Model)
+
+	// Click in the right (Events) panel — X is past 35% width.
+	rightX := 120*35/100 + 5
+	next, _ = m.Update(mouseClick(rightX, contentTop+1))
+	if next.(Model).cursor != 0 {
+		t.Errorf("expected cursor to stay 0 when clicking outside agents panel, got %d", next.(Model).cursor)
+	}
+}
+
+func TestUpdate_MouseClick_DoesNotBreakKeyboardNavigation(t *testing.T) {
+	nodes := []agent.Node{
+		{ID: "a", Name: "agent-a", Status: agent.StatusRunning},
+		{ID: "b", Name: "agent-b", Status: agent.StatusRunning},
+		{ID: "c", Name: "agent-c", Status: agent.StatusRunning},
+	}
+	m := New(nodes, nil)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = next.(Model)
+
+	// Click row 2 with mouse.
+	next, _ = m.Update(mouseClick(5, contentTop+2))
+	m = next.(Model)
+	if m.cursor != 2 {
+		t.Fatalf("expected cursor 2 after mouse click, got %d", m.cursor)
+	}
+
+	// Then use keyboard to move up.
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	if next.(Model).cursor != 1 {
+		t.Errorf("expected cursor 1 after k following mouse click, got %d", next.(Model).cursor)
+	}
+}
