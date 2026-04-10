@@ -88,8 +88,8 @@ func TestParseSessionIDs_EmptyFile(t *testing.T) {
 }
 
 func TestLoad_NoMatchingDirectory(t *testing.T) {
-	// Point Load at a cwd that has no matching project directory.
-	nodes, err := Load("/this/path/does/not/exist/in/claude/projects")
+	// Point loadFrom at a base dir that has no matching project subdirectory.
+	nodes, err := loadFrom(t.TempDir(), "/this/path/does/not/exist")
 	if err != nil {
 		t.Fatalf("expected nil error for missing directory, got %v", err)
 	}
@@ -101,7 +101,8 @@ func TestLoad_NoMatchingDirectory(t *testing.T) {
 func TestLoad_ReturnsNodesForMatchingSessions(t *testing.T) {
 	// Build a fake ~/.claude/projects/<dir> structure in a temp dir.
 	base := t.TempDir()
-	projectDir := filepath.Join(base, "-fake-project")
+	cwd := "/fake/project"
+	projectDir := filepath.Join(base, cwdToDir(cwd))
 	if err := os.MkdirAll(projectDir, 0700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -115,80 +116,130 @@ func TestLoad_ReturnsNodesForMatchingSessions(t *testing.T) {
 		`{"type":"user","sessionId":"dddd-eeee-ffff","cwd":"/fake/project"}`,
 	})
 
-	// Temporarily override the home directory by testing the internal
-	// cwdToDir + parseSessionIDs helpers directly (Load uses os.UserHomeDir
-	// which we can't easily override without refactoring for this basic test).
-	ids1, err := parseSessionIDs(filepath.Join(projectDir, "session-a.jsonl"))
+	nodes, err := loadFrom(base, cwd)
 	if err != nil {
-		t.Fatalf("parseSessionIDs: %v", err)
+		t.Fatalf("loadFrom: %v", err)
 	}
-	ids2, err := parseSessionIDs(filepath.Join(projectDir, "session-b.jsonl"))
-	if err != nil {
-		t.Fatalf("parseSessionIDs: %v", err)
+	if len(nodes) != 2 {
+		t.Fatalf("expected 2 nodes, got %d: %v", len(nodes), nodes)
 	}
-
-	// Validate the helpers produce the right IDs.
-	if len(ids1) != 1 || ids1[0] != "aaaa-bbbb-cccc" {
-		t.Errorf("session-a.jsonl: got %v", ids1)
+	ids := map[string]bool{nodes[0].ID: true, nodes[1].ID: true}
+	if !ids["aaaa-bbbb-cccc"] || !ids["dddd-eeee-ffff"] {
+		t.Errorf("unexpected node IDs: %v", nodes)
 	}
-	if len(ids2) != 1 || ids2[0] != "dddd-eeee-ffff" {
-		t.Errorf("session-b.jsonl: got %v", ids2)
+	for _, n := range nodes {
+		if n.Status != agent.StatusDone {
+			t.Errorf("node %q: expected StatusDone, got %d", n.ID, n.Status)
+		}
 	}
 }
 
 func TestLoad_RehydrationIdempotent(t *testing.T) {
-	// Verify that parsing the same JSONL file twice (simulating a restart)
-	// produces identical session IDs — re-hydration is deterministic.
-	dir := t.TempDir()
-	path := writeTempJSONL(t, dir, "session.jsonl", []string{
+	// Verify that calling loadFrom twice on the same data produces identical
+	// nodes — re-hydration on restart is deterministic.
+	base := t.TempDir()
+	cwd := "/project"
+	projectDir := filepath.Join(base, cwdToDir(cwd))
+	if err := os.MkdirAll(projectDir, 0700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeTempJSONL(t, projectDir, "session.jsonl", []string{
 		`{"type":"user","sessionId":"id-one","cwd":"/project"}`,
 		`{"type":"assistant","sessionId":"id-one","cwd":"/project"}`,
 		`{"type":"user","sessionId":"id-two","cwd":"/project"}`,
 	})
 
-	ids1, err := parseSessionIDs(path)
+	nodes1, err := loadFrom(base, cwd)
 	if err != nil {
-		t.Fatalf("first parse: %v", err)
+		t.Fatalf("first load: %v", err)
+	}
+	nodes2, err := loadFrom(base, cwd)
+	if err != nil {
+		t.Fatalf("second load: %v", err)
 	}
 
-	ids2, err := parseSessionIDs(path)
-	if err != nil {
-		t.Fatalf("second parse: %v", err)
+	if len(nodes1) != len(nodes2) {
+		t.Fatalf("re-hydration mismatch: first=%v second=%v", nodes1, nodes2)
 	}
-
-	if len(ids1) != len(ids2) {
-		t.Fatalf("re-hydration mismatch: first=%v second=%v", ids1, ids2)
-	}
-	for i := range ids1 {
-		if ids1[i] != ids2[i] {
-			t.Errorf("ids[%d]: first=%q second=%q", i, ids1[i], ids2[i])
+	for i := range nodes1 {
+		if nodes1[i].ID != nodes2[i].ID {
+			t.Errorf("nodes[%d]: first=%q second=%q", i, nodes1[i].ID, nodes2[i].ID)
 		}
 	}
 }
 
-func TestLoad_NodeNames(t *testing.T) {
-	// Verify that long IDs get the "session:XXXXXXXX" prefix treatment.
-	dir := t.TempDir()
-	path := writeTempJSONL(t, dir, "s.jsonl", []string{
-		`{"type":"user","sessionId":"abcdefghijklmnop"}`,
+func TestLoad_NonJSONLFilesIgnored(t *testing.T) {
+	base := t.TempDir()
+	cwd := "/proj"
+	projectDir := filepath.Join(base, cwdToDir(cwd))
+	if err := os.MkdirAll(projectDir, 0700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// Write a .jsonl file and a .txt file; only the .jsonl should be read.
+	writeTempJSONL(t, projectDir, "session.jsonl", []string{
+		`{"type":"user","sessionId":"valid-id","cwd":"/proj"}`,
+	})
+	if err := os.WriteFile(filepath.Join(projectDir, "notes.txt"), []byte("ignore me"), 0600); err != nil {
+		t.Fatalf("write txt: %v", err)
+	}
+	// Also add a subdirectory — should be skipped.
+	if err := os.MkdirAll(filepath.Join(projectDir, "subdir"), 0700); err != nil {
+		t.Fatalf("mkdir subdir: %v", err)
+	}
+
+	nodes, err := loadFrom(base, cwd)
+	if err != nil {
+		t.Fatalf("loadFrom: %v", err)
+	}
+	if len(nodes) != 1 || nodes[0].ID != "valid-id" {
+		t.Errorf("expected 1 node with ID 'valid-id', got %v", nodes)
+	}
+}
+
+func TestLoad_DuplicateIDsAcrossFiles(t *testing.T) {
+	base := t.TempDir()
+	cwd := "/proj"
+	projectDir := filepath.Join(base, cwdToDir(cwd))
+	if err := os.MkdirAll(projectDir, 0700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// Same session ID in two different files — should produce one node.
+	writeTempJSONL(t, projectDir, "a.jsonl", []string{
+		`{"type":"user","sessionId":"shared-id","cwd":"/proj"}`,
+	})
+	writeTempJSONL(t, projectDir, "b.jsonl", []string{
+		`{"type":"assistant","sessionId":"shared-id","cwd":"/proj"}`,
 	})
 
-	ids, err := parseSessionIDs(path)
-	if err != nil || len(ids) == 0 {
-		t.Fatalf("parseSessionIDs: err=%v ids=%v", err, ids)
+	nodes, err := loadFrom(base, cwd)
+	if err != nil {
+		t.Fatalf("loadFrom: %v", err)
 	}
+	if len(nodes) != 1 {
+		t.Errorf("expected 1 deduplicated node, got %d: %v", len(nodes), nodes)
+	}
+}
 
-	// Build a node the same way Load does and check its name.
-	id := ids[0]
-	name := id
-	if len(name) > 8 {
-		name = "session:" + name[:8]
+func TestLoad_NodeNames(t *testing.T) {
+	// Verify that long IDs get the "session:XXXXXXXX" name treatment via loadFrom.
+	base := t.TempDir()
+	cwd := "/myproject"
+	projectDir := filepath.Join(base, cwdToDir(cwd))
+	if err := os.MkdirAll(projectDir, 0700); err != nil {
+		t.Fatalf("mkdir: %v", err)
 	}
-	n := agent.Node{ID: id, Name: name, Status: agent.StatusDone}
-	if n.Name != "session:abcdefgh" {
-		t.Errorf("expected name 'session:abcdefgh', got %q", n.Name)
+	writeTempJSONL(t, projectDir, "s.jsonl", []string{
+		`{"type":"user","sessionId":"abcdefghijklmnop","cwd":"/myproject"}`,
+	})
+
+	nodes, err := loadFrom(base, cwd)
+	if err != nil || len(nodes) == 0 {
+		t.Fatalf("loadFrom: err=%v nodes=%v", err, nodes)
 	}
-	if n.Status != agent.StatusDone {
-		t.Errorf("expected StatusDone, got %d", n.Status)
+	if nodes[0].Name != "session:abcdefgh" {
+		t.Errorf("expected name 'session:abcdefgh', got %q", nodes[0].Name)
+	}
+	if nodes[0].Status != agent.StatusDone {
+		t.Errorf("expected StatusDone, got %d", nodes[0].Status)
 	}
 }
