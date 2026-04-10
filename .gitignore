@@ -18,3 +18,13 @@ dist/
 
 # Go
 vendor/
+
+# Environment / secrets
+.env
+.env.*
+*.local
+
+# Test output
+*.test
+coverage.out
+coverage.html
