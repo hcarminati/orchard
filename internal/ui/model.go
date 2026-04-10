@@ -1,13 +1,21 @@
 // Package ui contains all TUI components and layout logic for Orchard.
 // It follows the Bubbletea pattern: a Model struct holds all state, and
 // three methods — Init, Update, View — define how the app behaves.
+//
+// Data flows into the TUI exclusively via Bubbletea messages (hookEventMsg).
+// This package does not import internal/hooks or internal/session directly;
+// callers pass a pre-built channel and initial nodes so the package boundary
+// stays clean.
 package ui
 
 import (
+	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/hcarminati/orchard/internal/agent"
 )
 
 // panel is a custom type representing which panel is currently focused.
@@ -35,35 +43,68 @@ var (
 	colorMuted  = lipgloss.Color("#6B7280") // gray — used for inactive elements and descriptions
 	colorGreen  = lipgloss.Color("#10B981") // green — running agent status dot
 	colorYellow = lipgloss.Color("#F59E0B") // yellow — idle agent status dot
+	colorRed    = lipgloss.Color("#EF4444") // red — error agent status dot
 	colorFg     = lipgloss.Color("#F9FAFB") // near-white — primary text
 )
+
+// hookEventMsg wraps an incoming hook event as a Bubbletea message.
+// Keeping it unexported prevents callers from constructing it directly;
+// it is only ever produced by waitForEvent.
+type hookEventMsg struct{ event agent.Event }
 
 // Model holds all the state for the Orchard TUI.
 // In Bubbletea, the model is a value type (not a pointer), meaning it gets
 // copied on every update. This keeps state changes predictable and testable.
 type Model struct {
-	width       int   // current terminal width in columns
-	height      int   // current terminal height in rows
-	activePanel panel // which panel currently has keyboard focus
+	width       int           // current terminal width in columns
+	height      int           // current terminal height in rows
+	activePanel panel         // which panel currently has keyboard focus
+	agents      agent.Tree    // live agent hierarchy
+	hasSession  bool          // whether any session data has been received
+	eventCh     <-chan agent.Event // nil when no hook server is running
 }
 
-// New creates and returns a fresh Model with sensible defaults.
-// This is called once at startup from main.go.
-func New() Model {
-	return Model{activePanel: panelAgents}
+// New creates a Model initialized with session data and a hook event channel.
+//
+// nodes is the initial set of agents loaded from JSONL on startup (may be nil).
+// eventCh delivers incoming hook events from the embedded HTTP server; pass nil
+// to run without live updates (useful in tests).
+func New(nodes []agent.Node, eventCh <-chan agent.Event) Model {
+	tree := agent.NewTree()
+	for _, n := range nodes {
+		tree.AddNode(n)
+	}
+	return Model{
+		activePanel: panelAgents,
+		agents:      tree,
+		hasSession:  len(nodes) > 0,
+		eventCh:     eventCh,
+	}
+}
+
+// waitForEvent returns a Cmd that blocks until the next event arrives on ch,
+// then returns it as a hookEventMsg. The TUI re-issues this command after each
+// event so the listener stays alive for the lifetime of the program.
+func waitForEvent(ch <-chan agent.Event) tea.Cmd {
+	return func() tea.Msg {
+		return hookEventMsg{event: <-ch}
+	}
 }
 
 // Init is called once when the program starts.
-// It can return a `tea.Cmd` to kick off background work (like fetching data).
-// We have nothing to do at startup yet, so we return nil.
-func (m Model) Init() tea.Cmd { return nil }
+// If an event channel is present, it kicks off the first waitForEvent listener.
+func (m Model) Init() tea.Cmd {
+	if m.eventCh == nil {
+		return nil
+	}
+	return waitForEvent(m.eventCh)
+}
 
 // Update is the heart of Bubbletea. Every time something happens — a keypress,
 // a window resize, a background task finishing — Bubbletea calls Update with a
 // message describing what happened. Update returns a new model (with updated state)
-// and optionally a command to run next (like fetching more data or quitting).
+// and optionally a command to run next.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	// `switch msg.(type)` is a Go type switch — it checks what kind of message arrived.
 	switch msg := msg.(type) {
 
 	// The terminal was resized. Store the new dimensions so View can use them.
@@ -82,6 +123,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// so it toggles: 0 → 1 → 0 → 1 ...
 			m.activePanel = (m.activePanel + 1) % 2
 		}
+
+	// A hook event arrived from the HTTP server.
+	case hookEventMsg:
+		m.agents.ApplyEvent(msg.event)
+		m.hasSession = true
+		// Re-issue the wait command so we keep listening for the next event.
+		return m, waitForEvent(m.eventCh)
 	}
 
 	// Return the (possibly updated) model and no command.
@@ -114,9 +162,15 @@ func (m Model) View() string {
 
 // renderHeader builds the top bar: "orchard" on the left, session status on the right.
 func (m Model) renderHeader() string {
-	// Render the left and right pieces with their styles.
 	left := lipgloss.NewStyle().Bold(true).Foreground(colorAccent).Render(" orchard")
-	right := lipgloss.NewStyle().Foreground(colorMuted).Render("no active session ")
+
+	var statusText string
+	if m.hasSession {
+		statusText = fmt.Sprintf("%d agents", len(m.agents.Nodes))
+	} else {
+		statusText = "waiting for session…"
+	}
+	right := lipgloss.NewStyle().Foreground(colorMuted).Render(statusText + " ")
 
 	// lipgloss.Width measures the visible width of a styled string (ignoring invisible
 	// ANSI escape codes that carry the color information).
@@ -186,34 +240,56 @@ func (m Model) renderPanel(title, content string, width, height int, active bool
 	return style.Render(lipgloss.JoinVertical(lipgloss.Left, titleStr, content))
 }
 
-// agentsContent returns placeholder content for the Agents panel.
-// This will be replaced with a real agent tree in v0.3.
+// agentsContent renders the Agents panel body.
+// When no session is active it shows a "waiting" prompt; otherwise it lists
+// each root agent node with a colored status dot.
 func (m Model) agentsContent() string {
-	// dot renders a colored circle character — used as a status indicator.
+	if !m.hasSession || len(m.agents.Nodes) == 0 {
+		return lipgloss.NewStyle().
+			Foreground(colorMuted).
+			Padding(0, 1).
+			Render("Waiting for session…")
+	}
+
 	dot := func(c lipgloss.Color) string {
 		return lipgloss.NewStyle().Foreground(c).Render("●")
 	}
 
-	// A pre-built style for the muted tree-branch characters (├─ └─).
-	muted := lipgloss.NewStyle().Foreground(colorMuted)
-
-	// Build each line of the placeholder tree manually.
-	// In v0.3 this will be generated dynamically from real agent data.
-	lines := []string{
-		"  " + dot(colorGreen) + " main-agent",
-		"  " + muted.Render("├─ ") + dot(colorGreen) + " explore",
-		"  " + muted.Render("└─ ") + dot(colorYellow) + " plan",
+	var lines []string
+	for _, id := range m.agents.Roots {
+		n := m.agents.Nodes[id]
+		if n == nil {
+			continue
+		}
+		lines = append(lines, "  "+dot(statusColor(n.Status))+" "+n.Name)
 	}
 
-	// Join the lines into a single string with newlines between them.
+	if len(lines) == 0 {
+		return lipgloss.NewStyle().Foreground(colorMuted).Padding(0, 1).Render("Waiting for session…")
+	}
+
 	return strings.Join(lines, "\n")
 }
 
 // eventsContent returns placeholder content for the Events panel.
-// This will show real agent event logs once the data pipeline is built in v0.2/v0.4.
+// Real per-agent event logs will be shown here in v0.4.
 func (m Model) eventsContent() string {
 	return lipgloss.NewStyle().
 		Foreground(colorMuted).
 		Padding(0, 1).
 		Render("Focus an agent to view its event log.")
+}
+
+// statusColor maps an agent status to its indicator color.
+func statusColor(s agent.Status) lipgloss.Color {
+	switch s {
+	case agent.StatusRunning:
+		return colorGreen
+	case agent.StatusDone:
+		return colorMuted
+	case agent.StatusError:
+		return colorRed
+	default:
+		return colorYellow
+	}
 }
