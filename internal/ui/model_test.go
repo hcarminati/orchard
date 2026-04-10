@@ -195,3 +195,110 @@ func TestInit_WithChannel_ReturnsNonNilCmd(t *testing.T) {
 		t.Error("expected non-nil Cmd from Init when eventCh is set")
 	}
 }
+
+func TestIdleTimeout_PostToolUse_SchedulesTimer(t *testing.T) {
+	ch := make(chan agent.Event, 1)
+	m := New(nil, ch)
+
+	_, cmd := m.Update(hookEventMsg{event: agent.Event{
+		Type: "PostToolUse", SessionID: "s1", Timestamp: time.Now(),
+	}})
+
+	// PostToolUse should return a batched cmd (waitForEvent + scheduleIdle).
+	if cmd == nil {
+		t.Error("expected a non-nil Cmd after PostToolUse (idle timer should be scheduled)")
+	}
+}
+
+func TestIdleTimeout_TransitionsRunningToIdle(t *testing.T) {
+	m := newModel()
+	// Seed a running session.
+	next, _ := m.Update(hookEventMsg{event: agent.Event{
+		Type: "PreToolUse", SessionID: "s1", Timestamp: time.Now(),
+	}})
+	// Simulate PostToolUse to bump the generation to 1.
+	next, _ = next.Update(hookEventMsg{event: agent.Event{
+		Type: "PostToolUse", SessionID: "s1", Timestamp: time.Now(),
+	}})
+	// Fire the idle timeout with the current generation (2: PreToolUse bumped to 1, PostToolUse to 2).
+	next, _ = next.Update(idleTimeoutMsg{sessionID: "s1", gen: 2})
+
+	got := next.(Model)
+	node := got.agents.Nodes["s1"]
+	if node == nil {
+		t.Fatal("expected node s1 to exist")
+	}
+	if node.Status != agent.StatusIdle {
+		t.Errorf("expected StatusIdle after idle timeout, got %d", node.Status)
+	}
+}
+
+func TestDoneTimeout_TransitionsIdleToDone(t *testing.T) {
+	m := newModel()
+	// Run a full turn: PreToolUse → PostToolUse → Stop.
+	for _, typ := range []string{"PreToolUse", "PostToolUse", "Stop"} {
+		next, _ := m.Update(hookEventMsg{event: agent.Event{
+			Type: typ, SessionID: "s1", Timestamp: time.Now(),
+		}})
+		m = next.(Model)
+	}
+	// After Stop the session is Idle and timerGen["s1"] == 3 (one increment per event).
+	gen := m.timerGen["s1"]
+	next, _ := m.Update(doneTimeoutMsg{sessionID: "s1", gen: gen})
+
+	node := next.(Model).agents.Nodes["s1"]
+	if node == nil {
+		t.Fatal("expected node s1")
+	}
+	if node.Status != agent.StatusDone {
+		t.Errorf("expected StatusDone after done timeout, got %d", node.Status)
+	}
+}
+
+func TestDoneTimeout_StaleGenIgnored(t *testing.T) {
+	m := newModel()
+	for _, typ := range []string{"PreToolUse", "PostToolUse", "Stop"} {
+		next, _ := m.Update(hookEventMsg{event: agent.Event{
+			Type: typ, SessionID: "s1", Timestamp: time.Now(),
+		}})
+		m = next.(Model)
+	}
+	staleGen := m.timerGen["s1"] - 1
+	// New PreToolUse arrives, invalidating the done timer.
+	next, _ := m.Update(hookEventMsg{event: agent.Event{
+		Type: "PreToolUse", SessionID: "s1", Timestamp: time.Now(),
+	}})
+	next, _ = next.Update(doneTimeoutMsg{sessionID: "s1", gen: staleGen})
+
+	node := next.(Model).agents.Nodes["s1"]
+	if node.Status != agent.StatusRunning {
+		t.Errorf("expected StatusRunning (stale done timer ignored), got %d", node.Status)
+	}
+}
+
+func TestIdleTimeout_StaleGenIgnored(t *testing.T) {
+	m := newModel()
+	// PreToolUse → gen becomes 1.
+	next, _ := m.Update(hookEventMsg{event: agent.Event{
+		Type: "PreToolUse", SessionID: "s1", Timestamp: time.Now(),
+	}})
+	// PostToolUse → gen becomes 2, timer scheduled for gen 2.
+	next, _ = next.Update(hookEventMsg{event: agent.Event{
+		Type: "PostToolUse", SessionID: "s1", Timestamp: time.Now(),
+	}})
+	// Another PreToolUse arrives before the timer fires → gen becomes 3.
+	next, _ = next.Update(hookEventMsg{event: agent.Event{
+		Type: "PreToolUse", SessionID: "s1", Timestamp: time.Now(),
+	}})
+	// The stale timer (gen 2) fires — should be ignored.
+	next, _ = next.Update(idleTimeoutMsg{sessionID: "s1", gen: 2})
+
+	got := next.(Model)
+	node := got.agents.Nodes["s1"]
+	if node == nil {
+		t.Fatal("expected node s1 to exist")
+	}
+	if node.Status != agent.StatusRunning {
+		t.Errorf("expected StatusRunning (stale timer ignored), got %d", node.Status)
+	}
+}

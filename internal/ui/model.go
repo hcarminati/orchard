@@ -11,6 +11,7 @@ package ui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -47,21 +48,46 @@ var (
 	colorFg     = lipgloss.Color("#F9FAFB") // near-white — primary text
 )
 
+// idleDuration is how long after the last PostToolUse event before a session
+// transitions from Running to Idle.
+const idleDuration = 3 * time.Second
+
+// doneDuration is how long a session can stay Idle with no new activity before
+// it is assumed closed and transitions to Done (grey).
+const doneDuration = 10 * time.Minute
+
 // hookEventMsg wraps an incoming hook event as a Bubbletea message.
 // Keeping it unexported prevents callers from constructing it directly;
 // it is only ever produced by waitForEvent.
 type hookEventMsg struct{ event agent.Event }
 
+// idleTimeoutMsg is sent by scheduleIdle when a session has been quiet for
+// idleDuration. The gen field lets Update discard stale timers: if a new
+// tool call arrived after the timer was scheduled, the generation will have
+// been incremented and the timer is ignored.
+type idleTimeoutMsg struct {
+	sessionID string
+	gen       int
+}
+
+// doneTimeoutMsg is sent by scheduleDone when a session has been Idle for
+// doneDuration with no new activity, indicating the session is likely closed.
+type doneTimeoutMsg struct {
+	sessionID string
+	gen       int
+}
+
 // Model holds all the state for the Orchard TUI.
 // In Bubbletea, the model is a value type (not a pointer), meaning it gets
 // copied on every update. This keeps state changes predictable and testable.
 type Model struct {
-	width       int           // current terminal width in columns
-	height      int           // current terminal height in rows
-	activePanel panel         // which panel currently has keyboard focus
-	agents      agent.Tree    // live agent hierarchy
-	hasSession  bool          // whether any session data has been received
+	width       int                // current terminal width in columns
+	height      int                // current terminal height in rows
+	activePanel panel              // which panel currently has keyboard focus
+	agents      agent.Tree         // live agent hierarchy
+	hasSession  bool               // whether any session data has been received
 	eventCh     <-chan agent.Event // nil when no hook server is running
+	timerGen    map[string]int     // per-session idle timer generation; incremented to cancel stale timers
 }
 
 // New creates a Model initialized with session data and a hook event channel.
@@ -79,6 +105,7 @@ func New(nodes []agent.Node, eventCh <-chan agent.Event) Model {
 		agents:      tree,
 		hasSession:  len(nodes) > 0,
 		eventCh:     eventCh,
+		timerGen:    make(map[string]int),
 	}
 }
 
@@ -88,6 +115,27 @@ func New(nodes []agent.Node, eventCh <-chan agent.Event) Model {
 func waitForEvent(ch <-chan agent.Event) tea.Cmd {
 	return func() tea.Msg {
 		return hookEventMsg{event: <-ch}
+	}
+}
+
+// scheduleIdle returns a Cmd that sends an idleTimeoutMsg after idleDuration.
+// gen is the current timer generation for sessionID; if a newer tool call
+// arrives before the timer fires, the generation will be incremented and the
+// message will be ignored in Update.
+func scheduleIdle(sessionID string, gen int) tea.Cmd {
+	return func() tea.Msg {
+		time.Sleep(idleDuration)
+		return idleTimeoutMsg{sessionID: sessionID, gen: gen}
+	}
+}
+
+// scheduleDone returns a Cmd that sends a doneTimeoutMsg after doneDuration.
+// If any new activity arrives before the timer fires, the generation will be
+// incremented and the message will be ignored in Update.
+func scheduleDone(sessionID string, gen int) tea.Cmd {
+	return func() tea.Msg {
+		time.Sleep(doneDuration)
+		return doneTimeoutMsg{sessionID: sessionID, gen: gen}
 	}
 }
 
@@ -126,10 +174,45 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// A hook event arrived from the HTTP server.
 	case hookEventMsg:
-		m.agents.ApplyEvent(msg.event)
+		e := msg.event
+		m.agents.ApplyEvent(e)
 		m.hasSession = true
-		// Re-issue the wait command so we keep listening for the next event.
-		return m, waitForEvent(m.eventCh)
+		cmd := waitForEvent(m.eventCh)
+		switch e.Type {
+		case "PostToolUse":
+			// Schedule an idle transition after the tool completes.
+			// Increment the generation so any previously scheduled timer is invalidated.
+			m.timerGen[e.SessionID]++
+			cmd = tea.Batch(cmd, scheduleIdle(e.SessionID, m.timerGen[e.SessionID]))
+		case "PreToolUse":
+			// A new tool call started — invalidate any pending idle or done timer.
+			m.timerGen[e.SessionID]++
+		case "Stop", "SubagentStop":
+			// Turn ended. Schedule a done transition after doneDuration of inactivity.
+			// If the user sends another message before the timer fires, PreToolUse will
+			// increment the generation and the timer will be discarded.
+			m.timerGen[e.SessionID]++
+			cmd = tea.Batch(cmd, scheduleDone(e.SessionID, m.timerGen[e.SessionID]))
+		}
+		return m, cmd
+
+	// An idle timer fired. Transition to Idle only if the generation still matches
+	// (i.e. no new tool call arrived after the timer was scheduled).
+	case idleTimeoutMsg:
+		if m.timerGen[msg.sessionID] == msg.gen {
+			if node, ok := m.agents.Nodes[msg.sessionID]; ok && node.Status == agent.StatusRunning {
+				node.Status = agent.StatusIdle
+			}
+		}
+
+	// A done timer fired. Transition to Done only if the generation still matches
+	// (i.e. the session has been Idle for doneDuration with no new activity).
+	case doneTimeoutMsg:
+		if m.timerGen[msg.sessionID] == msg.gen {
+			if node, ok := m.agents.Nodes[msg.sessionID]; ok && node.Status == agent.StatusIdle {
+				node.Status = agent.StatusDone
+			}
+		}
 	}
 
 	// Return the (possibly updated) model and no command.
