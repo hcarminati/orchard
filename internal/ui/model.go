@@ -118,6 +118,7 @@ type Model struct {
 	eventCh         <-chan agent.Event // nil when no hook server is running
 	timerGen        map[string]int     // per-session idle timer generation; incremented to cancel stale timers
 	cursor          int                // index into visibleNodes() for the focused node
+	scrollOffset    int                // index of the first visible row in the agents panel
 	collapsed       map[string]bool    // set of node IDs whose subtrees are currently hidden
 	collapsedGroups map[string]bool    // set of GroupIDs whose members are currently hidden
 	statusFilter    filterMode         // which nodes to show in the agent tree
@@ -143,6 +144,36 @@ func New(nodes []agent.Node, eventCh <-chan agent.Event) Model {
 		collapsed:       make(map[string]bool),
 		collapsedGroups: make(map[string]bool),
 		statusFilter:    filterAll,
+	}
+}
+
+// agentsPanelInnerH returns the number of content rows available inside the
+// Agents panel. It accounts for the footer row and the top+bottom panel border.
+func (m Model) agentsPanelInnerH() int {
+	return max(1, m.height-footerHeight-2)
+}
+
+// clampScroll adjusts scrollOffset so the cursor row is always inside the
+// visible viewport. Call this after any operation that may move the cursor or
+// change the list length.
+func (m *Model) clampScroll() {
+	h := m.agentsPanelInnerH()
+	n := len(m.visibleNodes())
+	// Scroll down: cursor moved below the bottom of the viewport.
+	if m.cursor >= m.scrollOffset+h {
+		m.scrollOffset = m.cursor - h + 1
+	}
+	// Scroll up: cursor moved above the top of the viewport.
+	if m.cursor < m.scrollOffset {
+		m.scrollOffset = m.cursor
+	}
+	// Clamp offset so we don't scroll past the end of the list.
+	maxOffset := max(0, n-h)
+	if m.scrollOffset > maxOffset {
+		m.scrollOffset = maxOffset
+	}
+	if m.scrollOffset < 0 {
+		m.scrollOffset = 0
 	}
 }
 
@@ -196,6 +227,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.clampScroll()
 
 	// A key was pressed.
 	case tea.KeyMsg:
@@ -211,10 +243,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			n := len(m.visibleNodes())
 			if n > 0 && m.cursor < n-1 {
 				m.cursor++
+				m.clampScroll()
 			}
 		case "k", "up":
 			if m.cursor > 0 {
 				m.cursor--
+				m.clampScroll()
 			}
 		case " ":
 			vn := m.visibleNodes()
@@ -226,10 +260,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.collapsed[entry.id] = !m.collapsed[entry.id]
 				}
 			}
-			// Clamp cursor: collapsing may shrink the visible list below the cursor index.
+			// Clamp cursor and scroll: collapsing may shrink the visible list.
 			if newLen := len(m.visibleNodes()); m.cursor >= newLen {
 				m.cursor = max(0, newLen-1)
 			}
+			m.clampScroll()
 		case "[":
 			// Cycle left through right-panel tabs, wrapping from first to last.
 			n := len(rightTabs)
@@ -241,6 +276,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Cycle filter: All → Running → Errored → All.
 			m.statusFilter = (m.statusFilter + 1) % 3
 			m.cursor = 0
+			m.scrollOffset = 0
 		case "enter":
 			vn := m.visibleNodes()
 			if m.cursor < len(vn) {
@@ -266,8 +302,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			leftW := m.width * 35 / 100
 			if msg.X < leftW {
 				// Content rows begin after: top border (1). No header row any more.
+				// Add scrollOffset to convert screen row → list index.
 				const contentTop = 1
-				idx := msg.Y - contentTop
+				idx := msg.Y - contentTop + m.scrollOffset
 				vn := m.visibleNodes()
 				if idx >= 0 && idx < len(vn) {
 					m.cursor = idx
@@ -278,10 +315,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					} else if node := m.agents.Nodes[entry.id]; node != nil && len(node.Children) > 0 {
 						m.collapsed[entry.id] = !m.collapsed[entry.id]
 					}
-					// Clamp cursor: collapsing may shrink the visible list.
+					// Clamp cursor and scroll: collapsing may shrink the visible list.
 					if newLen := len(m.visibleNodes()); m.cursor >= newLen {
 						m.cursor = max(0, newLen-1)
 					}
+					m.clampScroll()
 				}
 			}
 		}

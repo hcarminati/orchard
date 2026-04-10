@@ -118,12 +118,15 @@ func (m Model) filesContent() string {
 
 // renderPanel draws a panel whose title is embedded in the top border, lazygit-style:
 //
-//	┌─Title──────────────────────────┐
+//	╭─Title──────────────────────────╮
 //	│ content …                      │
-//	└────────────────────────────────┘
+//	╰────────────────────────────────╯
 //
 // title may be a pre-styled string (with ANSI codes); lipgloss.Width is used to
 // measure its visible width. `active` controls border color.
+//
+// Strategy: let lipgloss render the full bordered panel (reliable sizing on every
+// resize), then replace only the first line with our title-embedded top border.
 func (m Model) renderPanel(title, content string, width, height int, active bool) string {
 	borderColor := colorMuted
 	if active {
@@ -134,30 +137,27 @@ func (m Model) renderPanel(title, content string, width, height int, active bool
 	innerW := max(1, width-2)
 	innerH := max(1, height-2)
 
-	// Top border: ╭─Title──────╮  (rounded corners, title after leading dash)
-	titleW := lipgloss.Width(title)
-	// Visible chars used: ╭ (1) + ─ (1) + title + ─…─ + ╮ (1) = width
-	dashCount := max(0, width-3-titleW)
-	var topBorder string
-	if title == "" {
-		topBorder = bs.Render("╭" + strings.Repeat("─", width-2) + "╮")
-	} else {
-		topBorder = bs.Render("╭─") + title + bs.Render(strings.Repeat("─", dashCount)+"╮")
+	// Step 1: render with standard lipgloss border — this guarantees correct
+	// width/height on every terminal resize.
+	rendered := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(borderColor).
+		Width(innerW).
+		Height(innerH).
+		Render(content)
+
+	// Step 2: replace the first line with our title-embedded top border.
+	// ╭─Title──────╮  visible chars: ╭(1) + ─(1) + title + ─…(n) + ╮(1) = width
+	if title != "" {
+		titleW := lipgloss.Width(title)
+		dashCount := max(0, width-3-titleW)
+		customTop := bs.Render("╭─") + title + bs.Render(strings.Repeat("─", dashCount)+"╮")
+		if nl := strings.Index(rendered, "\n"); nl != -1 {
+			rendered = customTop + rendered[nl:]
+		}
 	}
-	bottomBorder := bs.Render("╰" + strings.Repeat("─", width-2) + "╯")
 
-	// Render content into a fixed innerW×innerH box so side borders align correctly.
-	contentBox := lipgloss.NewStyle().Width(innerW).Height(innerH).Render(content)
-	lines := strings.Split(contentBox, "\n")
-
-	rows := make([]string, 0, 2+len(lines))
-	rows = append(rows, topBorder)
-	for _, line := range lines {
-		rows = append(rows, bs.Render("│")+line+bs.Render("│"))
-	}
-	rows = append(rows, bottomBorder)
-
-	return strings.Join(rows, "\n")
+	return rendered
 }
 
 // agentsContent renders the Agents panel body.
@@ -203,11 +203,21 @@ func (m Model) agentsContent() string {
 		return "▼ "
 	}
 
-	var lines []string
 	vn := m.visibleNodes()
 
-	for i, entry := range vn {
-		focused := i == m.cursor
+	// Slice to the visible viewport so the panel doesn't overflow.
+	viewH := m.agentsPanelInnerH()
+	start := m.scrollOffset
+	end := min(start+viewH, len(vn))
+	if start > len(vn) {
+		start = len(vn)
+	}
+	visible := vn[start:end]
+
+	var lines []string
+
+	for i, entry := range visible {
+		focused := (start + i) == m.cursor
 
 		// Virtual group header row — collapsible, not backed by a real node.
 		if entry.groupID != "" {
