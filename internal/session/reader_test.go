@@ -39,7 +39,7 @@ func TestCwdToDir(t *testing.T) {
 	}
 }
 
-func TestParseSessionIDs_ValidLines(t *testing.T) {
+func TestParseNodes_ValidLines(t *testing.T) {
 	dir := t.TempDir()
 	path := writeTempJSONL(t, dir, "test.jsonl", []string{
 		`{"type":"user","sessionId":"aaa-111","cwd":"/foo"}`,
@@ -47,16 +47,16 @@ func TestParseSessionIDs_ValidLines(t *testing.T) {
 		`{"type":"user","sessionId":"bbb-222","cwd":"/foo"}`,
 	})
 
-	ids, err := parseSessionIDs(path)
+	nodes, err := parseNodes(path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(ids) != 2 {
-		t.Fatalf("expected 2 unique IDs, got %d: %v", len(ids), ids)
+	if len(nodes) != 2 {
+		t.Fatalf("expected 2 unique nodes, got %d: %v", len(nodes), nodes)
 	}
 }
 
-func TestParseSessionIDs_MalformedLinesSkipped(t *testing.T) {
+func TestParseNodes_MalformedLinesSkipped(t *testing.T) {
 	dir := t.TempDir()
 	path := writeTempJSONL(t, dir, "test.jsonl", []string{
 		`{"type":"user","sessionId":"good-id","cwd":"/foo"}`,
@@ -65,25 +65,99 @@ func TestParseSessionIDs_MalformedLinesSkipped(t *testing.T) {
 		`{"type":"user","sessionId":"good-id2","cwd":"/foo"}`,
 	})
 
-	ids, err := parseSessionIDs(path)
+	nodes, err := parseNodes(path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(ids) != 2 {
-		t.Errorf("expected 2 IDs (malformed lines skipped), got %d: %v", len(ids), ids)
+	if len(nodes) != 2 {
+		t.Errorf("expected 2 nodes (malformed lines skipped), got %d: %v", len(nodes), nodes)
 	}
 }
 
-func TestParseSessionIDs_EmptyFile(t *testing.T) {
+func TestParseNodes_EmptyFile(t *testing.T) {
 	dir := t.TempDir()
 	path := writeTempJSONL(t, dir, "empty.jsonl", nil)
 
-	ids, err := parseSessionIDs(path)
+	nodes, err := parseNodes(path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(ids) != 0 {
-		t.Errorf("expected 0 IDs from empty file, got %d", len(ids))
+	if len(nodes) != 0 {
+		t.Errorf("expected 0 nodes from empty file, got %d", len(nodes))
+	}
+}
+
+func TestParseNodes_ExtractsToolUseEvents(t *testing.T) {
+	dir := t.TempDir()
+	path := writeTempJSONL(t, dir, "test.jsonl", []string{
+		`{"type":"user","sessionId":"s1","cwd":"/foo","timestamp":"2026-01-01T15:04:05.000Z","message":{"role":"user","content":"hello"}}`,
+		`{"type":"assistant","sessionId":"s1","cwd":"/foo","timestamp":"2026-01-01T15:04:06.000Z","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash"},{"type":"tool_use","name":"Read"}]}}`,
+	})
+
+	nodes, err := parseNodes(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(nodes) != 1 {
+		t.Fatalf("expected 1 node, got %d", len(nodes))
+	}
+	if len(nodes[0].Events) != 2 {
+		t.Fatalf("expected 2 events, got %d: %v", len(nodes[0].Events), nodes[0].Events)
+	}
+	if nodes[0].Events[0].Tool != "Bash" {
+		t.Errorf("expected first event tool=Bash, got %q", nodes[0].Events[0].Tool)
+	}
+	if nodes[0].Events[1].Tool != "Read" {
+		t.Errorf("expected second event tool=Read, got %q", nodes[0].Events[1].Tool)
+	}
+	for _, e := range nodes[0].Events {
+		if e.Type != "PreToolUse" {
+			t.Errorf("expected event type PreToolUse, got %q", e.Type)
+		}
+		if e.SessionID != "s1" {
+			t.Errorf("expected event sessionID=s1, got %q", e.SessionID)
+		}
+		if e.Timestamp.IsZero() {
+			t.Error("expected non-zero timestamp on event")
+		}
+	}
+}
+
+func TestParseNodes_StringContentIgnored(t *testing.T) {
+	// Assistant messages with string content (not array) should not produce events.
+	dir := t.TempDir()
+	path := writeTempJSONL(t, dir, "test.jsonl", []string{
+		`{"type":"assistant","sessionId":"s1","cwd":"/foo","timestamp":"2026-01-01T15:04:05.000Z","message":{"role":"assistant","content":"just a text reply"}}`,
+	})
+
+	nodes, err := parseNodes(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(nodes) != 1 {
+		t.Fatalf("expected 1 node, got %d", len(nodes))
+	}
+	if len(nodes[0].Events) != 0 {
+		t.Errorf("expected 0 events for string content, got %d", len(nodes[0].Events))
+	}
+}
+
+func TestParseNodes_NonToolUseBlocksIgnored(t *testing.T) {
+	// Blocks with type != "tool_use" should not produce events.
+	dir := t.TempDir()
+	path := writeTempJSONL(t, dir, "test.jsonl", []string{
+		`{"type":"assistant","sessionId":"s1","cwd":"/foo","timestamp":"2026-01-01T15:04:05.000Z","message":{"role":"assistant","content":[{"type":"text","text":"hello"},{"type":"tool_use","name":"Glob"}]}}`,
+	})
+
+	nodes, err := parseNodes(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(nodes[0].Events) != 1 {
+		t.Errorf("expected 1 event (only tool_use block), got %d", len(nodes[0].Events))
+	}
+	if nodes[0].Events[0].Tool != "Glob" {
+		t.Errorf("expected tool=Glob, got %q", nodes[0].Events[0].Tool)
 	}
 }
 

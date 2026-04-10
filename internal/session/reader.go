@@ -12,20 +12,39 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/hcarminati/orchard/internal/agent"
 )
 
-// record captures only the fields we care about from each JSONL line.
+// rawMessage holds just the fields we inspect: the role and raw content bytes.
+// Content is kept as json.RawMessage because it can be either a string or an
+// array of content blocks, depending on the message type.
+type rawMessage struct {
+	Role       string          `json:"role"`
+	ContentRaw json.RawMessage `json:"content"`
+}
+
+// contentBlock represents a single block in a message content array.
+// We only care about tool_use blocks (to reconstruct PreToolUse events).
+type contentBlock struct {
+	Type string `json:"type"`
+	Name string `json:"name"` // populated for tool_use blocks
+}
+
+// record captures the fields we need from each JSONL line.
 type record struct {
-	Type      string `json:"type"`
-	SessionID string `json:"sessionId"`
-	CWD       string `json:"cwd"`
+	Type      string     `json:"type"`
+	SessionID string     `json:"sessionId"`
+	CWD       string     `json:"cwd"`
+	Timestamp string     `json:"timestamp"`
+	Message   rawMessage `json:"message"`
 }
 
 // Load reads the Claude Code project directory that corresponds to cwd and
-// returns one agent.Node per unique session ID found. Nodes are returned with
-// StatusDone because they represent historical (already-completed) sessions.
+// returns one agent.Node per unique session ID found. Each node's Events slice
+// is populated with the tool-use history extracted from the conversation, so
+// the events tab is populated when Orchard restarts.
 //
 // If no matching project directory exists, Load returns nil, nil — this is not
 // an error; the TUI will show "waiting for session…" instead.
@@ -58,27 +77,18 @@ func loadFrom(base, cwd string) ([]agent.Node, error) {
 			continue
 		}
 
-		ids, err := parseSessionIDs(filepath.Join(dir, entry.Name()))
+		fileNodes, err := parseNodes(filepath.Join(dir, entry.Name()))
 		if err != nil {
 			// Skip unreadable files — don't fail the whole load.
 			continue
 		}
 
-		for _, id := range ids {
-			if seen[id] {
+		for _, n := range fileNodes {
+			if seen[n.ID] {
 				continue
 			}
-			seen[id] = true
-
-			name := id
-			if len(name) > 8 {
-				name = "session:" + name[:8]
-			}
-			nodes = append(nodes, agent.Node{
-				ID:     id,
-				Name:   name,
-				Status: agent.StatusDone,
-			})
+			seen[n.ID] = true
+			nodes = append(nodes, n)
 		}
 	}
 
@@ -91,17 +101,19 @@ func cwdToDir(cwd string) string {
 	return strings.ReplaceAll(cwd, "/", "-")
 }
 
-// parseSessionIDs reads a JSONL file line by line and returns the unique session
-// IDs found within. Malformed lines are silently skipped.
-func parseSessionIDs(path string) ([]string, error) {
+// parseNodes reads a JSONL file and returns one node per unique session ID.
+// Tool-use events are extracted from assistant message content blocks and
+// attached to each node, so the events tab is populated on restart.
+// Malformed lines are silently skipped.
+func parseNodes(path string) ([]agent.Node, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
 
-	seen := make(map[string]bool)
-	var ids []string
+	nodeMap := make(map[string]*agent.Node)
+	var order []string
 
 	// 1 MB line buffer to handle large assistant messages without truncation.
 	scanner := bufio.NewScanner(f)
@@ -112,11 +124,68 @@ func parseSessionIDs(path string) ([]string, error) {
 		if err := json.Unmarshal(scanner.Bytes(), &rec); err != nil {
 			continue // skip malformed lines
 		}
-		if rec.SessionID != "" && !seen[rec.SessionID] {
-			seen[rec.SessionID] = true
-			ids = append(ids, rec.SessionID)
+		if rec.SessionID == "" {
+			continue
+		}
+
+		// Register the node the first time we see this session ID.
+		if _, exists := nodeMap[rec.SessionID]; !exists {
+			name := rec.SessionID
+			if len(name) > 8 {
+				name = "session:" + name[:8]
+			}
+			n := &agent.Node{
+				ID:     rec.SessionID,
+				Name:   name,
+				Status: agent.StatusDone,
+			}
+			nodeMap[rec.SessionID] = n
+			order = append(order, rec.SessionID)
+		}
+
+		// Only assistant messages carry tool_use blocks.
+		if rec.Message.Role != "assistant" {
+			continue
+		}
+
+		// content can be a string (simple text reply) or an array of blocks.
+		// Ignore string content — it carries no tool calls.
+		var blocks []contentBlock
+		if err := json.Unmarshal(rec.Message.ContentRaw, &blocks); err != nil {
+			continue
+		}
+
+		ts := parseTimestamp(rec.Timestamp)
+		node := nodeMap[rec.SessionID]
+		for _, block := range blocks {
+			if block.Type == "tool_use" && block.Name != "" {
+				node.Events = append(node.Events, agent.Event{
+					Type:      "PreToolUse",
+					SessionID: rec.SessionID,
+					Tool:      block.Name,
+					Timestamp: ts,
+				})
+			}
 		}
 	}
 
-	return ids, scanner.Err()
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+
+	nodes := make([]agent.Node, 0, len(order))
+	for _, id := range order {
+		nodes = append(nodes, *nodeMap[id])
+	}
+	return nodes, nil
+}
+
+// parseTimestamp parses an RFC3339 timestamp string, returning the zero time
+// on failure rather than propagating an error.
+func parseTimestamp(s string) time.Time {
+	t, err := time.Parse(time.RFC3339Nano, s)
+	if err != nil {
+		return time.Time{}
+	}
+	return t.Local()
 }
