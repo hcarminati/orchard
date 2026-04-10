@@ -63,6 +63,9 @@ type Node struct {
 	Status Status
 	// GroupID links nodes that are parallel competing runs of the same task.
 	GroupID string
+	// Winner is true when this node has been chosen as the best result among
+	// parallel competing runs that share the same GroupID.
+	Winner bool
 	// Tools lists tool names called by this agent, in call order.
 	Tools []string
 	// Skills lists skill names attached to this agent.
