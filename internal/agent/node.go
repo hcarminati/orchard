@@ -19,11 +19,6 @@ const (
 	StatusError
 )
 
-// terminal returns true if the status is a final, non-recoverable state.
-func (s Status) terminal() bool {
-	return s == StatusDone || s == StatusError
-}
-
 // Model identifies which Claude model the agent is running.
 type Model string
 
@@ -66,8 +61,13 @@ type Node struct {
 	Model Model
 	// Status is the current lifecycle state of this agent.
 	Status Status
+	// ErrorMsg holds the error message when Status is StatusError.
+	ErrorMsg string
 	// GroupID links nodes that are parallel competing runs of the same task.
 	GroupID string
+	// Winner is true when this node has been chosen as the best result among
+	// parallel competing runs that share the same GroupID.
+	Winner bool
 	// Tools lists tool names called by this agent, in call order.
 	Tools []string
 	// Skills lists skill names attached to this agent.
@@ -139,15 +139,24 @@ func (t *Tree) ApplyEvent(e Event) {
 
 	node.Events = append(node.Events, e)
 
-	// Terminal states (Done, Error) are final — no further transitions allowed.
-	if node.Status.terminal() {
+	// StatusError is the only truly unrecoverable terminal state.
+	// StatusDone can transition back to Running if a new PreToolUse arrives —
+	// this happens when Orchard starts mid-session and loads the session from
+	// JSONL as Done, then receives live events for the still-active session.
+	if node.Status == StatusError {
 		return
 	}
 
 	switch e.Type {
 	case "Stop", "SubagentStop":
-		node.Status = StatusDone
+		// A live Stop means the turn ended and the session is waiting for the next
+		// user message — not that it is permanently over. StatusDone is reserved for
+		// sessions loaded from JSONL at startup (historical runs).
+		node.Status = StatusIdle
 	case "PreToolUse":
 		node.Status = StatusRunning
+	case "Error":
+		node.Status = StatusError
+		node.ErrorMsg = e.Message
 	}
 }
