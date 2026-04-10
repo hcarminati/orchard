@@ -30,7 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--version` flag: print version and exit; version set at build time via `-ldflags`
 - Unit and integration tests for all v0.2 packages (agent: 100%, hooks: 96%, session: 84%)
 
-## [0.1.0] - 2026-03-01
+## [0.1.0] - 2026-04-09
 
 ### Added
 - Initial TUI skeleton with two-panel layout (Agents / Events)
