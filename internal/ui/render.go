@@ -283,12 +283,52 @@ func (m Model) agentsContent() string {
 	return strings.Join(lines, "\n")
 }
 
-// eventsContent returns placeholder content for the Events panel.
+// eventsContent renders the event log for the currently focused agent node.
+// Each entry shows a timestamp, event type, and tool name where applicable.
+// The list is scrollable via j/k when the right panel has focus.
 func (m Model) eventsContent() string {
-	return lipgloss.NewStyle().
-		Foreground(colorMuted).
-		Padding(0, 1).
-		Render("Focus an agent to view its event log.")
+	muted := lipgloss.NewStyle().Foreground(colorMuted).Padding(0, 1)
+
+	if !m.hasSession {
+		return muted.Render("Waiting for session…")
+	}
+
+	node := m.focusedNode()
+	if node == nil {
+		return muted.Render("Focus an agent to view its event log.")
+	}
+
+	if len(node.Events) == 0 {
+		return muted.Render("No events yet.")
+	}
+
+	leftW := m.width * 35 / 100
+	rightW := m.width - leftW
+	innerW := max(1, rightW-2)
+	viewH := max(1, m.height-footerHeight-2)
+
+	tsStyle := lipgloss.NewStyle().Foreground(colorMuted)
+	toolStyle := lipgloss.NewStyle().Foreground(colorAccent)
+
+	var lines []string
+	for _, e := range node.Events {
+		ts := tsStyle.Render(e.Timestamp.Format("15:04:05"))
+		line := " " + ts + "  " + e.Type
+		if e.Tool != "" {
+			line += "  " + toolStyle.Render(e.Tool)
+		}
+		if lipgloss.Width(line) > innerW {
+			line = lipgloss.NewStyle().MaxWidth(innerW - 1).Render(line) + "…"
+		}
+		lines = append(lines, line)
+	}
+
+	start := m.eventScroll
+	if start > len(lines) {
+		start = len(lines)
+	}
+	end := min(start+viewH, len(lines))
+	return strings.Join(lines[start:end], "\n")
 }
 
 // statusColor maps an agent status to its indicator color.

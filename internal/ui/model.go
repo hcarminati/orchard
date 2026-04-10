@@ -115,6 +115,7 @@ type Model struct {
 	timerGen        map[string]int     // per-session idle timer generation; incremented to cancel stale timers
 	cursor          int                // index into visibleNodes() for the focused node
 	scrollOffset    int                // index of the first visible row in the agents panel
+	eventScroll     int                // index of the first visible row in the events panel
 	collapsed       map[string]bool    // set of node IDs whose subtrees are currently hidden
 	collapsedGroups map[string]bool    // set of GroupIDs whose members are currently hidden
 	statusFilter    filterMode         // which nodes to show in the agent tree
@@ -196,6 +197,38 @@ func (m *Model) clampScroll() {
 	}
 }
 
+// focusedNode returns the agent.Node currently under the cursor, or nil when
+// the cursor is on a group header or no nodes exist.
+func (m Model) focusedNode() *agent.Node {
+	vn := m.visibleNodes()
+	if m.cursor >= len(vn) {
+		return nil
+	}
+	id := vn[m.cursor].id
+	if id == "" {
+		return nil // group header, not a real node
+	}
+	return m.agents.Nodes[id]
+}
+
+// clampEventScroll adjusts eventScroll so it stays within the bounds of the
+// focused node's event list. Call this after scrolling or switching agents.
+func (m *Model) clampEventScroll() {
+	node := m.focusedNode()
+	if node == nil {
+		m.eventScroll = 0
+		return
+	}
+	viewH := max(1, m.height-footerHeight-2)
+	maxScroll := max(0, len(node.Events)-viewH)
+	if m.eventScroll > maxScroll {
+		m.eventScroll = maxScroll
+	}
+	if m.eventScroll < 0 {
+		m.eventScroll = 0
+	}
+}
+
 // waitForEvent returns a Cmd that blocks until the next event arrives on ch,
 // then returns it as a hookEventMsg. The TUI re-issues this command after each
 // event so the listener stays alive for the lifetime of the program.
@@ -254,15 +287,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "tab":
 			m.activePanel = (m.activePanel + 1) % 2
 		case "j", "down":
-			n := len(m.visibleNodes())
-			if n > 0 && m.cursor < n-1 {
-				m.cursor++
-				m.clampScroll()
+			if m.activePanel == panelEvents {
+				m.eventScroll++
+				m.clampEventScroll()
+			} else {
+				n := len(m.visibleNodes())
+				if n > 0 && m.cursor < n-1 {
+					m.cursor++
+					m.eventScroll = 0
+					m.clampScroll()
+				}
 			}
 		case "k", "up":
-			if m.cursor > 0 {
-				m.cursor--
-				m.clampScroll()
+			if m.activePanel == panelEvents {
+				m.eventScroll--
+				m.clampEventScroll()
+			} else {
+				if m.cursor > 0 {
+					m.cursor--
+					m.eventScroll = 0
+					m.clampScroll()
+				}
 			}
 		case " ":
 			vn := m.visibleNodes()
@@ -307,6 +352,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.MouseMsg:
+		// Scroll wheel / trackpad: route to whichever panel the pointer is over.
+		if msg.Button == tea.MouseButtonWheelUp || msg.Button == tea.MouseButtonWheelDown {
+			delta := 1
+			if msg.Button == tea.MouseButtonWheelUp {
+				delta = -1
+			}
+			leftW := m.width * 35 / 100
+			if msg.X < leftW {
+				n := len(m.visibleNodes())
+				h := m.agentsPanelInnerH()
+				m.scrollOffset = max(0, min(m.scrollOffset+delta, max(0, n-h)))
+			} else {
+				m.eventScroll += delta
+				m.clampEventScroll()
+			}
+		}
 		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
 			leftW := m.width * 35 / 100
 			if msg.X < leftW {
@@ -317,6 +378,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				vn := m.visibleNodes()
 				if idx >= 0 && idx < len(vn) {
 					m.activePanel = panelAgents
+					if idx != m.cursor {
+						m.eventScroll = 0
+					}
 					m.cursor = idx
 					// Toggle collapse state, mirroring the space-bar handler.
 					entry := vn[idx]
