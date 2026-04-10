@@ -19,6 +19,21 @@ const (
 	StatusError
 )
 
+// terminal returns true if the status is a final, non-recoverable state.
+func (s Status) terminal() bool {
+	return s == StatusDone || s == StatusError
+}
+
+// Model identifies which Claude model the agent is running.
+type Model string
+
+const (
+	ModelHaiku  Model = "haiku"
+	ModelSonnet Model = "sonnet"
+	ModelOpus   Model = "opus"
+	ModelUnknown Model = ""
+)
+
 // Event is a single hook event received from Claude Code for a particular session.
 type Event struct {
 	// Type is the hook event name: "PreToolUse", "PostToolUse", "Stop", "SubagentStop", "Notification".
@@ -43,14 +58,35 @@ type Node struct {
 	ID string
 	// ParentID is the ID of the parent node, or empty for root-level nodes.
 	ParentID string
+	// Children holds the IDs of direct child nodes, in insertion order.
+	Children []string
 	// Name is the human-readable label shown in the TUI.
 	Name string
+	// Model is the Claude model this agent is running (haiku, sonnet, opus).
+	Model Model
 	// Status is the current lifecycle state of this agent.
 	Status Status
 	// GroupID links nodes that are parallel competing runs of the same task.
 	GroupID string
+	// Tools lists tool names called by this agent, in call order.
+	Tools []string
+	// Skills lists skill names attached to this agent.
+	Skills []string
+	// Prompt is the instruction the agent was given.
+	Prompt string
 	// Events holds every hook event received for this agent, in order.
 	Events []Event
+}
+
+// NewNode returns a Node with the given ID and sensible zero/default values.
+func NewNode(id string) Node {
+	return Node{
+		ID:       id,
+		Status:   StatusIdle,
+		Children: []string{},
+		Tools:    []string{},
+		Skills:   []string{},
+	}
 }
 
 // Tree holds the complete agent hierarchy for one or more sessions.
@@ -70,11 +106,14 @@ func NewTree() Tree {
 
 // AddNode inserts n into the tree.
 // If n.ParentID is empty, n is also appended to Roots.
+// If n.ParentID refers to an existing node, n.ID is appended to the parent's Children.
 // If a node with the same ID already exists it is silently replaced.
 func (t *Tree) AddNode(n Node) {
 	t.Nodes[n.ID] = &n
 	if n.ParentID == "" {
 		t.Roots = append(t.Roots, n.ID)
+	} else if parent, ok := t.Nodes[n.ParentID]; ok {
+		parent.Children = append(parent.Children, n.ID)
 	}
 }
 
@@ -99,6 +138,11 @@ func (t *Tree) ApplyEvent(e Event) {
 	}
 
 	node.Events = append(node.Events, e)
+
+	// Terminal states (Done, Error) are final — no further transitions allowed.
+	if node.Status.terminal() {
+		return
+	}
 
 	switch e.Type {
 	case "Stop", "SubagentStop":
