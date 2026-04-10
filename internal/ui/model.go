@@ -297,6 +297,21 @@ func (m *Model) clampEventScroll() {
 	}
 }
 
+// eventAtLine returns the index of the event that occupies the given rendered
+// line offset (0-based from the top of all rendered event lines). Returns
+// (0, false) if lineOffset is beyond the last event.
+func (m *Model) eventAtLine(node *agent.Node, lineOffset int) (int, bool) {
+	line := 0
+	for i := range node.Events {
+		n := m.linesForEvent(node, i)
+		if lineOffset < line+n {
+			return i, true
+		}
+		line += n
+	}
+	return 0, false
+}
+
 // scrollToCursor adjusts eventScroll so the event at eventCursor is visible.
 func (m *Model) scrollToCursor() {
 	node := m.focusedNode()
@@ -522,6 +537,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if tab, ok := m.tabAtX(xInStrip); ok {
 					m.activePanel = panelEvents
 					m.activeRightTab = tab
+				}
+			} else if msg.X >= leftW && rightTabs[m.activeRightTab] == tabEvents {
+				// Right panel content area: move event cursor to clicked row.
+				const contentTop = 1
+				lineOffset := msg.Y - contentTop + m.eventScroll
+				if node := m.focusedNode(); node != nil && lineOffset >= 0 {
+					if idx, ok := m.eventAtLine(node, lineOffset); ok {
+						m.activePanel = panelEvents
+						if idx == m.eventCursor && isToolEvent(node.Events[idx]) {
+							// Clicking the already-selected tool event toggles expansion.
+							key := eventKey(node.ID, idx)
+							m.expandedEvents[key] = !m.expandedEvents[key]
+						}
+						m.eventCursor = idx
+						m.scrollToCursor()
+					}
 				}
 			}
 		}
