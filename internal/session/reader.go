@@ -34,8 +34,13 @@ func Load(cwd string) ([]agent.Node, error) {
 	if err != nil {
 		return nil, err
 	}
+	return loadFrom(filepath.Join(home, ".claude", "projects"), cwd)
+}
 
-	dir := filepath.Join(home, ".claude", "projects", cwdToDir(cwd))
+// loadFrom is the testable core of Load. base is the projects directory
+// (normally ~/.claude/projects); cwd is the working directory to match.
+func loadFrom(base, cwd string) ([]agent.Node, error) {
+	dir := filepath.Join(base, cwdToDir(cwd))
 
 	entries, err := os.ReadDir(dir)
 	if err != nil {
