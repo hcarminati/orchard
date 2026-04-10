@@ -2,7 +2,9 @@ package hooks
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -18,10 +20,8 @@ const testCWD = "/Users/test/myproject"
 func newTestServer(t *testing.T) (*httptest.Server, chan agent.Event) {
 	t.Helper()
 	ch := make(chan agent.Event, 10)
-	s := NewServer(testCWD, ch, "") // addr unused when using httptest
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", s.handle)
-	return httptest.NewServer(mux), ch
+	s := NewServer(testCWD, ch, "")
+	return httptest.NewServer(s.Handler()), ch
 }
 
 func postJSON(t *testing.T, srv *httptest.Server, body any) *http.Response {
@@ -35,6 +35,18 @@ func postJSON(t *testing.T, srv *httptest.Server, body any) *http.Response {
 		t.Fatalf("POST: %v", err)
 	}
 	return resp
+}
+
+// receiveEvent blocks until an event arrives on ch or the test times out.
+func receiveEvent(t *testing.T, ch chan agent.Event) agent.Event {
+	t.Helper()
+	select {
+	case e := <-ch:
+		return e
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for event")
+		return agent.Event{} // unreachable
+	}
 }
 
 func TestHandle_ValidEvent_DeliveredToChannel(t *testing.T) {
@@ -53,22 +65,18 @@ func TestHandle_ValidEvent_DeliveredToChannel(t *testing.T) {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 
-	select {
-	case e := <-ch:
-		if e.Type != "PreToolUse" {
-			t.Errorf("Type: got %q, want PreToolUse", e.Type)
-		}
-		if e.SessionID != "session-1" {
-			t.Errorf("SessionID: got %q, want session-1", e.SessionID)
-		}
-		if e.Tool != "Bash" {
-			t.Errorf("Tool: got %q, want Bash", e.Tool)
-		}
-		if e.Timestamp.IsZero() {
-			t.Error("expected non-zero Timestamp")
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for event")
+	e := receiveEvent(t, ch)
+	if e.Type != "PreToolUse" {
+		t.Errorf("Type: got %q, want PreToolUse", e.Type)
+	}
+	if e.SessionID != "session-1" {
+		t.Errorf("SessionID: got %q, want session-1", e.SessionID)
+	}
+	if e.Tool != "Bash" {
+		t.Errorf("Tool: got %q, want Bash", e.Tool)
+	}
+	if e.Timestamp.IsZero() {
+		t.Error("expected non-zero Timestamp")
 	}
 }
 
@@ -91,7 +99,6 @@ func TestHandle_WrongCWD_EventDropped(t *testing.T) {
 	case e := <-ch:
 		t.Errorf("unexpected event delivered: %+v", e)
 	default:
-		// good — nothing in the channel
 	}
 }
 
@@ -129,19 +136,93 @@ func TestHandle_StopEvent_Delivered(t *testing.T) {
 	srv, ch := newTestServer(t)
 	defer srv.Close()
 
+	postJSON(t, srv, payload{SessionID: "session-3", HookEventName: "Stop", CWD: testCWD}).Body.Close()
+
+	e := receiveEvent(t, ch)
+	if e.Type != "Stop" {
+		t.Errorf("Type: got %q, want Stop", e.Type)
+	}
+}
+
+func TestHandle_PostToolUse_InputAndResponseDelivered(t *testing.T) {
+	srv, ch := newTestServer(t)
+	defer srv.Close()
+
 	resp := postJSON(t, srv, payload{
-		SessionID:     "session-3",
-		HookEventName: "Stop",
+		SessionID:     "session-4",
+		HookEventName: "PostToolUse",
 		CWD:           testCWD,
+		ToolName:      "Read",
+		ToolInput:     json.RawMessage(`{"file_path":"/tmp/foo"}`),
+		ToolResponse:  "file contents",
 	})
 	resp.Body.Close()
 
-	select {
-	case e := <-ch:
-		if e.Type != "Stop" {
-			t.Errorf("expected Stop event, got %q", e.Type)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for Stop event")
+	e := receiveEvent(t, ch)
+	if e.Type != "PostToolUse" {
+		t.Errorf("Type: got %q, want PostToolUse", e.Type)
+	}
+	if e.Tool != "Read" {
+		t.Errorf("Tool: got %q, want Read", e.Tool)
+	}
+	if e.Input != `{"file_path":"/tmp/foo"}` {
+		t.Errorf("Input: got %q, want {\"file_path\":\"/tmp/foo\"}", e.Input)
+	}
+	if e.Response != "file contents" {
+		t.Errorf("Response: got %q, want \"file contents\"", e.Response)
+	}
+}
+
+func TestHandle_SubagentStop_Delivered(t *testing.T) {
+	srv, ch := newTestServer(t)
+	defer srv.Close()
+
+	postJSON(t, srv, payload{SessionID: "session-5", HookEventName: "SubagentStop", CWD: testCWD}).Body.Close()
+
+	e := receiveEvent(t, ch)
+	if e.Type != "SubagentStop" {
+		t.Errorf("Type: got %q, want SubagentStop", e.Type)
+	}
+	if e.SessionID != "session-5" {
+		t.Errorf("SessionID: got %q, want session-5", e.SessionID)
+	}
+}
+
+func TestHandle_Notification_MessageDelivered(t *testing.T) {
+	srv, ch := newTestServer(t)
+	defer srv.Close()
+
+	resp := postJSON(t, srv, payload{
+		SessionID:     "session-6",
+		HookEventName: "Notification",
+		CWD:           testCWD,
+		Message:       "agent is waiting for user input",
+	})
+	resp.Body.Close()
+
+	e := receiveEvent(t, ch)
+	if e.Type != "Notification" {
+		t.Errorf("Type: got %q, want Notification", e.Type)
+	}
+	if e.Message != "agent is waiting for user input" {
+		t.Errorf("Message: got %q, want \"agent is waiting for user input\"", e.Message)
+	}
+}
+
+func TestServer_GracefulShutdown(t *testing.T) {
+	ch := make(chan agent.Event, 1)
+	s := NewServer(testCWD, ch, "")
+
+	// Pre-bind the listener so the port is guaranteed ready before we call Shutdown.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	go func() { _ = s.StartOn(ln) }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := s.Shutdown(ctx); err != nil {
+		t.Errorf("Shutdown returned error: %v", err)
 	}
 }
