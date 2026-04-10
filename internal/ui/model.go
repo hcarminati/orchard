@@ -9,8 +9,7 @@
 package ui
 
 import (
-	"fmt"
-	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -30,38 +29,77 @@ const (
 	panelEvents
 )
 
+// filterMode controls which nodes are shown in the agent tree.
+type filterMode int
+
+const (
+	filterAll     filterMode = iota // show every node
+	filterRunning                   // show only nodes with StatusRunning
+	filterErrored                   // show only nodes with StatusError
+)
+
+// label returns the display name for the current filter mode.
+func (f filterMode) label() string {
+	switch f {
+	case filterRunning:
+		return "running"
+	case filterErrored:
+		return "errored"
+	default:
+		return "all"
+	}
+}
+
 // Fixed heights for the header and footer rows (in terminal lines).
 const (
 	headerHeight = 1
 	footerHeight = 1
 )
 
-// Color palette used throughout the TUI.
-// lipgloss.Color accepts any hex color string.
-var (
-	colorAccent = lipgloss.Color("#7C3AED") // violet — used for active panel border and title
-	colorMuted  = lipgloss.Color("#6B7280") // gray — used for inactive elements and descriptions
-	colorGreen  = lipgloss.Color("#10B981") // green — running agent status dot
-	colorYellow = lipgloss.Color("#F59E0B") // yellow — idle agent status dot
-	colorRed    = lipgloss.Color("#EF4444") // red — error agent status dot
-	colorFg     = lipgloss.Color("#F9FAFB") // near-white — primary text
-)
+// idleDuration is how long after the last PostToolUse event before a session
+// transitions from Running to Idle.
+const idleDuration = 3 * time.Second
+
+// doneDuration is how long a session can stay Idle with no new activity before
+// it is assumed closed and transitions to Done (grey).
+const doneDuration = 10 * time.Minute
 
 // hookEventMsg wraps an incoming hook event as a Bubbletea message.
 // Keeping it unexported prevents callers from constructing it directly;
 // it is only ever produced by waitForEvent.
 type hookEventMsg struct{ event agent.Event }
 
+// idleTimeoutMsg is sent by scheduleIdle when a session has been quiet for
+// idleDuration. The gen field lets Update discard stale timers: if a new
+// tool call arrived after the timer was scheduled, the generation will have
+// been incremented and the timer is ignored.
+type idleTimeoutMsg struct {
+	sessionID string
+	gen       int
+}
+
+// doneTimeoutMsg is sent by scheduleDone when a session has been Idle for
+// doneDuration with no new activity, indicating the session is likely closed.
+type doneTimeoutMsg struct {
+	sessionID string
+	gen       int
+}
+
 // Model holds all the state for the Orchard TUI.
 // In Bubbletea, the model is a value type (not a pointer), meaning it gets
 // copied on every update. This keeps state changes predictable and testable.
 type Model struct {
-	width       int           // current terminal width in columns
-	height      int           // current terminal height in rows
-	activePanel panel         // which panel currently has keyboard focus
-	agents      agent.Tree    // live agent hierarchy
-	hasSession  bool          // whether any session data has been received
-	eventCh     <-chan agent.Event // nil when no hook server is running
+	width           int                // current terminal width in columns
+	height          int                // current terminal height in rows
+	activePanel     panel              // which panel currently has keyboard focus
+	agents          agent.Tree         // live agent hierarchy
+	hasSession      bool               // whether any session data has been received
+	eventCh         <-chan agent.Event // nil when no hook server is running
+	timerGen        map[string]int     // per-session idle timer generation; incremented to cancel stale timers
+	cursor          int                // index into visibleNodes() for the focused node
+	collapsed       map[string]bool    // set of node IDs whose subtrees are currently hidden
+	collapsedGroups map[string]bool    // set of GroupIDs whose members are currently hidden
+	statusFilter    filterMode         // which nodes to show in the agent tree
 }
 
 // New creates a Model initialized with session data and a hook event channel.
@@ -75,10 +113,14 @@ func New(nodes []agent.Node, eventCh <-chan agent.Event) Model {
 		tree.AddNode(n)
 	}
 	return Model{
-		activePanel: panelAgents,
-		agents:      tree,
-		hasSession:  len(nodes) > 0,
-		eventCh:     eventCh,
+		activePanel:     panelAgents,
+		agents:          tree,
+		hasSession:      len(nodes) > 0,
+		eventCh:         eventCh,
+		timerGen:        make(map[string]int),
+		collapsed:       make(map[string]bool),
+		collapsedGroups: make(map[string]bool),
+		statusFilter:    filterAll,
 	}
 }
 
@@ -88,6 +130,27 @@ func New(nodes []agent.Node, eventCh <-chan agent.Event) Model {
 func waitForEvent(ch <-chan agent.Event) tea.Cmd {
 	return func() tea.Msg {
 		return hookEventMsg{event: <-ch}
+	}
+}
+
+// scheduleIdle returns a Cmd that sends an idleTimeoutMsg after idleDuration.
+// gen is the current timer generation for sessionID; if a newer tool call
+// arrives before the timer fires, the generation will be incremented and the
+// message will be ignored in Update.
+func scheduleIdle(sessionID string, gen int) tea.Cmd {
+	return func() tea.Msg {
+		time.Sleep(idleDuration)
+		return idleTimeoutMsg{sessionID: sessionID, gen: gen}
+	}
+}
+
+// scheduleDone returns a Cmd that sends a doneTimeoutMsg after doneDuration.
+// If any new activity arrives before the timer fires, the generation will be
+// incremented and the message will be ignored in Update.
+func scheduleDone(sessionID string, gen int) tea.Cmd {
+	return func() tea.Msg {
+		time.Sleep(doneDuration)
+		return doneTimeoutMsg{sessionID: sessionID, gen: gen}
 	}
 }
 
@@ -122,14 +185,119 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Cycle between panels. The `% 2` wraps back to 0 after reaching 1,
 			// so it toggles: 0 → 1 → 0 → 1 ...
 			m.activePanel = (m.activePanel + 1) % 2
+		case "j", "down":
+			n := len(m.visibleNodes())
+			if n > 0 && m.cursor < n-1 {
+				m.cursor++
+			}
+		case "k", "up":
+			if m.cursor > 0 {
+				m.cursor--
+			}
+		case " ":
+			vn := m.visibleNodes()
+			if m.cursor < len(vn) {
+				entry := vn[m.cursor]
+				if entry.groupID != "" {
+					m.collapsedGroups[entry.groupID] = !m.collapsedGroups[entry.groupID]
+				} else if node := m.agents.Nodes[entry.id]; node != nil && len(node.Children) > 0 {
+					m.collapsed[entry.id] = !m.collapsed[entry.id]
+				}
+			}
+			// Clamp cursor: collapsing may shrink the visible list below the cursor index.
+			if newLen := len(m.visibleNodes()); m.cursor >= newLen {
+				m.cursor = max(0, newLen-1)
+			}
+		case "f":
+			// Cycle filter: All → Running → Errored → All.
+			m.statusFilter = (m.statusFilter + 1) % 3
+			m.cursor = 0
+		case "enter":
+			vn := m.visibleNodes()
+			if m.cursor < len(vn) {
+				id := vn[m.cursor].id
+				if focused, ok := m.agents.Nodes[id]; ok && focused.GroupID != "" {
+					gid := focused.GroupID
+					// Un-mark all siblings in this group, then mark the focused node.
+					for _, rid := range m.agents.Roots {
+						if rn, ok := m.agents.Nodes[rid]; ok && rn.GroupID == gid {
+							rn.Winner = false
+						}
+					}
+					focused.Winner = true
+				}
+			}
+		}
+
+	// A mouse event was received. Handle left-button clicks on the Agents panel:
+	// move the cursor to the clicked row and toggle collapse/expand if the node
+	// has children (or is a parallel-group header).
+	case tea.MouseMsg:
+		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+			leftW := m.width * 35 / 100
+			if msg.X < leftW {
+				// Content rows begin after: header (1) + top border (1) + title row (1).
+				const contentTop = headerHeight + 1 + 1
+				idx := msg.Y - contentTop
+				vn := m.visibleNodes()
+				if idx >= 0 && idx < len(vn) {
+					m.cursor = idx
+					// Toggle collapse state, mirroring the space-bar handler.
+					entry := vn[idx]
+					if entry.groupID != "" {
+						m.collapsedGroups[entry.groupID] = !m.collapsedGroups[entry.groupID]
+					} else if node := m.agents.Nodes[entry.id]; node != nil && len(node.Children) > 0 {
+						m.collapsed[entry.id] = !m.collapsed[entry.id]
+					}
+					// Clamp cursor: collapsing may shrink the visible list.
+					if newLen := len(m.visibleNodes()); m.cursor >= newLen {
+						m.cursor = max(0, newLen-1)
+					}
+				}
+			}
 		}
 
 	// A hook event arrived from the HTTP server.
 	case hookEventMsg:
-		m.agents.ApplyEvent(msg.event)
+		e := msg.event
+		m.agents.ApplyEvent(e)
 		m.hasSession = true
-		// Re-issue the wait command so we keep listening for the next event.
-		return m, waitForEvent(m.eventCh)
+		cmd := waitForEvent(m.eventCh)
+		switch e.Type {
+		case "PostToolUse":
+			// Schedule an idle transition after the tool completes.
+			// Increment the generation so any previously scheduled timer is invalidated.
+			m.timerGen[e.SessionID]++
+			cmd = tea.Batch(cmd, scheduleIdle(e.SessionID, m.timerGen[e.SessionID]))
+		case "PreToolUse":
+			// A new tool call started — invalidate any pending idle or done timer.
+			m.timerGen[e.SessionID]++
+		case "Stop", "SubagentStop":
+			// Turn ended. Schedule a done transition after doneDuration of inactivity.
+			// If the user sends another message before the timer fires, PreToolUse will
+			// increment the generation and the timer will be discarded.
+			m.timerGen[e.SessionID]++
+			cmd = tea.Batch(cmd, scheduleDone(e.SessionID, m.timerGen[e.SessionID]))
+		}
+		return m, cmd
+
+	// An idle timer fired. Transition to Idle only if the generation still matches
+	// (i.e. no new tool call arrived after the timer was scheduled).
+	case idleTimeoutMsg:
+		if m.timerGen[msg.sessionID] == msg.gen {
+			if node, ok := m.agents.Nodes[msg.sessionID]; ok && node.Status == agent.StatusRunning {
+				node.Status = agent.StatusIdle
+			}
+		}
+
+	// A done timer fired. Transition to Done only if the generation still matches
+	// (i.e. the session has been Idle for doneDuration with no new activity).
+	case doneTimeoutMsg:
+		if m.timerGen[msg.sessionID] == msg.gen {
+			if node, ok := m.agents.Nodes[msg.sessionID]; ok && node.Status == agent.StatusIdle {
+				node.Status = agent.StatusDone
+			}
+		}
 	}
 
 	// Return the (possibly updated) model and no command.
@@ -158,138 +326,4 @@ func (m Model) View() string {
 		m.renderBody(bodyH),
 		m.renderFooter(),
 	)
-}
-
-// renderHeader builds the top bar: "orchard" on the left, session status on the right.
-func (m Model) renderHeader() string {
-	left := lipgloss.NewStyle().Bold(true).Foreground(colorAccent).Render(" orchard")
-
-	var statusText string
-	if m.hasSession {
-		statusText = fmt.Sprintf("%d agents", len(m.agents.Nodes))
-	} else {
-		statusText = "waiting for session…"
-	}
-	right := lipgloss.NewStyle().Foreground(colorMuted).Render(statusText + " ")
-
-	// lipgloss.Width measures the visible width of a styled string (ignoring invisible
-	// ANSI escape codes that carry the color information).
-	// We fill the gap between left and right with spaces to push them to opposite edges.
-	gap := max(0, m.width-lipgloss.Width(left)-lipgloss.Width(right))
-	return left + strings.Repeat(" ", gap) + right
-}
-
-// renderFooter builds the bottom keybindings bar.
-func (m Model) renderFooter() string {
-	// `bind` is a local helper function (only exists inside renderFooter).
-	// It formats a single key + description pair: bold key, muted description.
-	bind := func(key, desc string) string {
-		k := lipgloss.NewStyle().Bold(true).Foreground(colorFg).Render(key)
-		d := lipgloss.NewStyle().Foreground(colorMuted).Render(" " + desc + "  ")
-		return k + d
-	}
-
-	content := " " + bind("tab", "switch panel") + bind("q", "quit")
-
-	// Pad to full width so the footer bar extends across the whole terminal.
-	gap := max(0, m.width-lipgloss.Width(content))
-	return content + strings.Repeat(" ", gap)
-}
-
-// renderBody builds the two-panel layout that fills the space between header and footer.
-func (m Model) renderBody(height int) string {
-	// Give the left (Agents) panel 35% of the width, right (Events) panel gets the rest.
-	leftW := m.width * 35 / 100
-	rightW := m.width - leftW
-
-	// Render each panel, passing whether it's currently active (focused).
-	left := m.renderPanel("Agents", m.agentsContent(), leftW, height, m.activePanel == panelAgents)
-	right := m.renderPanel("Events", m.eventsContent(), rightW, height, m.activePanel == panelEvents)
-
-	// JoinHorizontal places the two panels side by side.
-	// lipgloss.Top means align them to the top edge if they differ in height.
-	return lipgloss.JoinHorizontal(lipgloss.Top, left, right)
-}
-
-// renderPanel draws a single bordered panel with a title and content inside.
-// `active` controls whether the border is highlighted (focused) or muted (unfocused).
-func (m Model) renderPanel(title, content string, width, height int, active bool) string {
-	// Focused panel gets the accent color, unfocused gets a subtle gray.
-	borderColor := colorMuted
-	if active {
-		borderColor = colorAccent
-	}
-
-	// The border takes 1 character on each side, so the inner content area
-	// is 2 columns narrower and 2 rows shorter than the outer panel dimensions.
-	innerW := max(1, width-2)
-	innerH := max(1, height-2)
-
-	titleStr := lipgloss.NewStyle().Bold(true).Foreground(colorFg).Padding(0, 1).Render(title)
-
-	// Build the panel style: rounded corners, colored border, fixed inner size.
-	// Setting Width and Height here ensures the panel always fills its allocated space,
-	// even if the content is shorter than the panel — lipgloss pads with empty lines.
-	style := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(borderColor).
-		Width(innerW).
-		Height(innerH)
-
-	// Stack the title on top of the content, then render them inside the bordered box.
-	return style.Render(lipgloss.JoinVertical(lipgloss.Left, titleStr, content))
-}
-
-// agentsContent renders the Agents panel body.
-// When no session is active it shows a "waiting" prompt; otherwise it lists
-// each root agent node with a colored status dot.
-func (m Model) agentsContent() string {
-	if !m.hasSession || len(m.agents.Nodes) == 0 {
-		return lipgloss.NewStyle().
-			Foreground(colorMuted).
-			Padding(0, 1).
-			Render("Waiting for session…")
-	}
-
-	dot := func(c lipgloss.Color) string {
-		return lipgloss.NewStyle().Foreground(c).Render("●")
-	}
-
-	var lines []string
-	for _, id := range m.agents.Roots {
-		n := m.agents.Nodes[id]
-		if n == nil {
-			continue
-		}
-		lines = append(lines, "  "+dot(statusColor(n.Status))+" "+n.Name)
-	}
-
-	if len(lines) == 0 {
-		return lipgloss.NewStyle().Foreground(colorMuted).Padding(0, 1).Render("Waiting for session…")
-	}
-
-	return strings.Join(lines, "\n")
-}
-
-// eventsContent returns placeholder content for the Events panel.
-// Real per-agent event logs will be shown here in v0.4.
-func (m Model) eventsContent() string {
-	return lipgloss.NewStyle().
-		Foreground(colorMuted).
-		Padding(0, 1).
-		Render("Focus an agent to view its event log.")
-}
-
-// statusColor maps an agent status to its indicator color.
-func statusColor(s agent.Status) lipgloss.Color {
-	switch s {
-	case agent.StatusRunning:
-		return colorGreen
-	case agent.StatusDone:
-		return colorMuted
-	case agent.StatusError:
-		return colorRed
-	default:
-		return colorYellow
-	}
 }

@@ -99,23 +99,25 @@ func TestApplyEvent_AppendToExistingNode(t *testing.T) {
 	}
 }
 
-func TestApplyEvent_StopSetsDone(t *testing.T) {
+func TestApplyEvent_StopSetsIdle(t *testing.T) {
 	tree := NewTree()
 	tree.AddNode(Node{ID: "s1", Status: StatusRunning})
 	tree.ApplyEvent(Event{Type: "Stop", SessionID: "s1", Timestamp: time.Now()})
 
-	if tree.Nodes["s1"].Status != StatusDone {
-		t.Errorf("expected StatusDone after Stop event, got %d", tree.Nodes["s1"].Status)
+	// Stop means the turn ended and the session is waiting for the next user message.
+	// StatusDone is reserved for sessions loaded from JSONL (historical runs).
+	if tree.Nodes["s1"].Status != StatusIdle {
+		t.Errorf("expected StatusIdle after Stop event, got %d", tree.Nodes["s1"].Status)
 	}
 }
 
-func TestApplyEvent_SubagentStopSetsDone(t *testing.T) {
+func TestApplyEvent_SubagentStopSetsIdle(t *testing.T) {
 	tree := NewTree()
 	tree.AddNode(Node{ID: "s1", Status: StatusRunning})
 	tree.ApplyEvent(Event{Type: "SubagentStop", SessionID: "s1", Timestamp: time.Now()})
 
-	if tree.Nodes["s1"].Status != StatusDone {
-		t.Errorf("expected StatusDone after SubagentStop, got %d", tree.Nodes["s1"].Status)
+	if tree.Nodes["s1"].Status != StatusIdle {
+		t.Errorf("expected StatusIdle after SubagentStop, got %d", tree.Nodes["s1"].Status)
 	}
 }
 
@@ -192,16 +194,28 @@ func TestGroupID_LinksSiblings(t *testing.T) {
 	}
 }
 
-func TestStatus_NoTransitionFromDone(t *testing.T) {
+func TestStatus_DoneReactivatedByPreToolUse(t *testing.T) {
+	tree := NewTree()
+	// Simulate a session loaded from JSONL at startup (StatusDone = historical).
+	tree.AddNode(Node{ID: "s1", Status: StatusDone})
+
+	// A live PreToolUse arrives for the same session — it should reactivate.
+	tree.ApplyEvent(Event{Type: "PreToolUse", SessionID: "s1", Timestamp: time.Now()})
+
+	if tree.Nodes["s1"].Status != StatusRunning {
+		t.Errorf("expected StatusRunning after PreToolUse on Done node, got %d", tree.Nodes["s1"].Status)
+	}
+}
+
+func TestStatus_IdleReactivatedByPreToolUse(t *testing.T) {
 	tree := NewTree()
 	tree.AddNode(Node{ID: "s1", Status: StatusRunning})
 	tree.ApplyEvent(Event{Type: "Stop", SessionID: "s1", Timestamp: time.Now()})
-
-	// Status is Done; a subsequent PreToolUse must not revert it.
+	// After Stop, session is Idle (waiting for next user message).
 	tree.ApplyEvent(Event{Type: "PreToolUse", SessionID: "s1", Timestamp: time.Now()})
 
-	if tree.Nodes["s1"].Status != StatusDone {
-		t.Errorf("expected status to stay Done after PreToolUse, got %d", tree.Nodes["s1"].Status)
+	if tree.Nodes["s1"].Status != StatusRunning {
+		t.Errorf("expected StatusRunning after PreToolUse on Idle node, got %d", tree.Nodes["s1"].Status)
 	}
 }
 
@@ -212,6 +226,36 @@ func TestStatus_NoTransitionFromError(t *testing.T) {
 
 	if tree.Nodes["s1"].Status != StatusError {
 		t.Errorf("expected status to stay Error, got %d", tree.Nodes["s1"].Status)
+	}
+}
+
+func TestApplyEvent_ErrorSetsStatusAndMessage(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "s1", Status: StatusRunning})
+	tree.ApplyEvent(Event{Type: "Error", SessionID: "s1", Message: "context deadline exceeded", Timestamp: time.Now()})
+
+	node := tree.Nodes["s1"]
+	if node.Status != StatusError {
+		t.Errorf("expected StatusError after Error event, got %d", node.Status)
+	}
+	if node.ErrorMsg != "context deadline exceeded" {
+		t.Errorf("expected ErrorMsg 'context deadline exceeded', got %q", node.ErrorMsg)
+	}
+}
+
+func TestApplyEvent_ErrorOnNewNode(t *testing.T) {
+	tree := NewTree()
+	tree.ApplyEvent(Event{Type: "Error", SessionID: "s-new", Message: "tool panicked", Timestamp: time.Now()})
+
+	node := tree.Nodes["s-new"]
+	if node == nil {
+		t.Fatal("expected node to be created")
+	}
+	if node.Status != StatusError {
+		t.Errorf("expected StatusError, got %d", node.Status)
+	}
+	if node.ErrorMsg != "tool panicked" {
+		t.Errorf("expected ErrorMsg 'tool panicked', got %q", node.ErrorMsg)
 	}
 }
 

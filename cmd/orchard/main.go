@@ -37,6 +37,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 
 	showVersion := fs.Bool("version", false, "print version and exit")
+	demo := fs.Bool("demo", false, "populate with fake agents for local testing")
 	portStr := fs.String("port", "7070", "port for the Claude Code hook server")
 	project := fs.String("project", "", "override the project working directory (default: current directory)")
 
@@ -68,9 +69,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	// Load existing session data from ~/.claude/projects/ to hydrate the initial tree.
 	// Errors here are non-fatal: the TUI will show "waiting for session…" instead.
-	initialNodes, err := session.Load(cwd)
-	if err != nil {
-		fmt.Fprintf(stderr, "warning: could not load session data: %v\n", err)
+	var initialNodes []agent.Node
+	if *demo {
+		initialNodes = demoNodes()
+	} else {
+		initialNodes, err = session.Load(cwd)
+		if err != nil {
+			fmt.Fprintf(stderr, "warning: could not load session data: %v\n", err)
+		}
 	}
 
 	// Create a buffered channel for hook events.
@@ -102,6 +108,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		ui.New(initialNodes, eventCh), // model seeded with session data + live event channel
 		tea.WithAltScreen(),           // use the terminal's alternate screen buffer so we
 		// don't mess up the user's scrollback history
+		tea.WithMouseCellMotion(), // enable mouse click support for node focus
 	)
 
 	// p.Run() starts the TUI and blocks until the user quits.
