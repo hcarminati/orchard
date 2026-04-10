@@ -132,3 +132,106 @@ func TestApplyEvent_NameTruncatedForLongID(t *testing.T) {
 		t.Errorf("expected name 'session:abcdefgh', got %q", node.Name)
 	}
 }
+
+func TestNewNode_Defaults(t *testing.T) {
+	n := NewNode("abc")
+	if n.ID != "abc" {
+		t.Errorf("expected ID 'abc', got %q", n.ID)
+	}
+	if n.Status != StatusIdle {
+		t.Errorf("expected StatusIdle, got %d", n.Status)
+	}
+	if n.Children == nil {
+		t.Error("expected Children slice initialized, got nil")
+	}
+	if n.Tools == nil {
+		t.Error("expected Tools slice initialized, got nil")
+	}
+	if n.Skills == nil {
+		t.Error("expected Skills slice initialized, got nil")
+	}
+}
+
+func TestAddNode_BidirectionalLink(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "parent"})
+	tree.AddNode(Node{ID: "child", ParentID: "parent"})
+
+	parent := tree.Nodes["parent"]
+	if len(parent.Children) != 1 || parent.Children[0] != "child" {
+		t.Errorf("expected parent.Children = [child], got %v", parent.Children)
+	}
+}
+
+func TestAddNode_MultipleChildren(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "parent"})
+	tree.AddNode(Node{ID: "c1", ParentID: "parent"})
+	tree.AddNode(Node{ID: "c2", ParentID: "parent"})
+
+	parent := tree.Nodes["parent"]
+	if len(parent.Children) != 2 {
+		t.Errorf("expected 2 children, got %d", len(parent.Children))
+	}
+}
+
+func TestGroupID_LinksSiblings(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "a", GroupID: "g1"})
+	tree.AddNode(Node{ID: "b", GroupID: "g1"})
+	tree.AddNode(Node{ID: "c", GroupID: "g2"})
+
+	var g1Members []string
+	for id, node := range tree.Nodes {
+		if node.GroupID == "g1" {
+			g1Members = append(g1Members, id)
+		}
+	}
+	if len(g1Members) != 2 {
+		t.Errorf("expected 2 nodes in group g1, got %d", len(g1Members))
+	}
+}
+
+func TestStatus_NoTransitionFromDone(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "s1", Status: StatusRunning})
+	tree.ApplyEvent(Event{Type: "Stop", SessionID: "s1", Timestamp: time.Now()})
+
+	// Status is Done; a subsequent PreToolUse must not revert it.
+	tree.ApplyEvent(Event{Type: "PreToolUse", SessionID: "s1", Timestamp: time.Now()})
+
+	if tree.Nodes["s1"].Status != StatusDone {
+		t.Errorf("expected status to stay Done after PreToolUse, got %d", tree.Nodes["s1"].Status)
+	}
+}
+
+func TestStatus_NoTransitionFromError(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "s1", Status: StatusError})
+	tree.ApplyEvent(Event{Type: "PreToolUse", SessionID: "s1", Timestamp: time.Now()})
+
+	if tree.Nodes["s1"].Status != StatusError {
+		t.Errorf("expected status to stay Error, got %d", tree.Nodes["s1"].Status)
+	}
+}
+
+func TestNodeFields_ModelToolsSkillsPrompt(t *testing.T) {
+	n := NewNode("x")
+	n.Model = ModelSonnet
+	n.Tools = append(n.Tools, "Bash", "Read")
+	n.Skills = append(n.Skills, "commit")
+	n.Prompt = "do the thing"
+
+	if n.Model != ModelSonnet {
+		t.Errorf("expected ModelSonnet, got %q", n.Model)
+	}
+	if len(n.Tools) != 2 || n.Tools[0] != "Bash" {
+		t.Errorf("unexpected Tools: %v", n.Tools)
+	}
+	if len(n.Skills) != 1 || n.Skills[0] != "commit" {
+		t.Errorf("unexpected Skills: %v", n.Skills)
+	}
+	if n.Prompt != "do the thing" {
+		t.Errorf("unexpected Prompt: %q", n.Prompt)
+	}
+}
