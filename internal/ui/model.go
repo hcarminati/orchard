@@ -17,13 +17,9 @@ import (
 	"github.com/hcarminati/orchard/internal/agent"
 )
 
-// panel is a custom type representing which panel is currently focused.
-// Using a named type (instead of a plain int) makes the code self-documenting
-// and prevents accidentally mixing it up with other integers.
+// panel identifies which panel currently has keyboard focus.
 type panel int
 
-// These are the two panels. `iota` is a Go shortcut that auto-increments:
-// panelAgents = 0, panelEvents = 1.
 const (
 	panelAgents panel = iota
 	panelEvents
@@ -147,6 +143,29 @@ func New(nodes []agent.Node, eventCh <-chan agent.Event) Model {
 	}
 }
 
+// tabAtX maps an X offset (relative to the start of the tab strip inside the
+// right panel's top border) to a tab index. Returns (index, true) when the
+// click lands on a tab label, (0, false) otherwise.
+// The strip layout mirrors tabStripTitle: active tabs are "[Label]", inactive
+// are "Label", separated by single spaces.
+func (m Model) tabAtX(x int) (int, bool) {
+	offset := 0
+	for i, t := range rightTabs {
+		var label string
+		if i == m.activeRightTab {
+			label = "[" + t.label() + "]"
+		} else {
+			label = t.label()
+		}
+		w := len(label) // all tab labels are ASCII
+		if x >= offset && x < offset+w {
+			return i, true
+		}
+		offset += w + 1 // +1 for the space separator between tabs
+	}
+	return 0, false
+}
+
 // agentsPanelInnerH returns the number of content rows available inside the
 // Agents panel. It accounts for the footer row and the top+bottom panel border.
 func (m Model) agentsPanelInnerH() int {
@@ -223,21 +242,16 @@ func (m Model) Init() tea.Cmd {
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 
-	// The terminal was resized. Store the new dimensions so View can use them.
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
 		m.clampScroll()
 
-	// A key was pressed.
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "q", "ctrl+c":
-			// tea.Quit is a built-in command that tells Bubbletea to stop the program.
 			return m, tea.Quit
 		case "tab":
-			// Cycle between panels. The `% 2` wraps back to 0 after reaching 1,
-			// so it toggles: 0 → 1 → 0 → 1 ...
 			m.activePanel = (m.activePanel + 1) % 2
 		case "j", "down":
 			n := len(m.visibleNodes())
@@ -266,11 +280,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.clampScroll()
 		case "[":
-			// Cycle left through right-panel tabs, wrapping from first to last.
 			n := len(rightTabs)
 			m.activeRightTab = (m.activeRightTab - 1 + n) % n
 		case "]":
-			// Cycle right through right-panel tabs, wrapping from last to first.
 			m.activeRightTab = (m.activeRightTab + 1) % len(rightTabs)
 		case "f":
 			// Cycle filter: All → Running → Errored → All.
@@ -294,19 +306,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-	// A mouse event was received. Handle left-button clicks on the Agents panel:
-	// move the cursor to the clicked row and toggle collapse/expand if the node
-	// has children (or is a parallel-group header).
 	case tea.MouseMsg:
 		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
 			leftW := m.width * 35 / 100
 			if msg.X < leftW {
-				// Content rows begin after: top border (1). No header row any more.
-				// Add scrollOffset to convert screen row → list index.
+				// Agents panel: content rows begin after the top border (row 1).
+				// Add scrollOffset to translate screen row → list index.
 				const contentTop = 1
 				idx := msg.Y - contentTop + m.scrollOffset
 				vn := m.visibleNodes()
 				if idx >= 0 && idx < len(vn) {
+					m.activePanel = panelAgents
 					m.cursor = idx
 					// Toggle collapse state, mirroring the space-bar handler.
 					entry := vn[idx]
@@ -320,6 +330,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.cursor = max(0, newLen-1)
 					}
 					m.clampScroll()
+				}
+			} else if msg.Y == 0 {
+				// Right panel top border: tabs start 2 columns in (after ╭─).
+				xInStrip := msg.X - leftW - 2
+				if tab, ok := m.tabAtX(xInStrip); ok {
+					m.activePanel = panelEvents
+					m.activeRightTab = tab
 				}
 			}
 		}
@@ -367,22 +384,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Return the (possibly updated) model and no command.
-	// Bubbletea will call View() with this new model to redraw the screen.
 	return m, nil
 }
 
-// View converts the current model state into a string that gets printed to the terminal.
-// Bubbletea calls this after every Update. Think of it as a render function —
-// it should be pure (no side effects) and fast.
+// View renders the current model state. Pure — no side effects.
 func (m Model) View() string {
-	// Don't try to render before we know the terminal size.
-	// Bubbletea sends a WindowSizeMsg almost immediately, so this is brief.
 	if m.width == 0 {
 		return "loading…"
 	}
 
-	// The body fills everything except the single footer row.
 	bodyH := m.height - footerHeight
 
 	return lipgloss.JoinVertical(

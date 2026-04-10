@@ -10,7 +10,6 @@ import (
 )
 
 // Color palette used throughout the TUI.
-// lipgloss.Color accepts any hex color string.
 var (
 	colorAccent = lipgloss.Color("#7C3AED") // violet — used for active panel border and title
 	colorMuted  = lipgloss.Color("#6B7280") // gray — used for inactive elements and descriptions
@@ -22,8 +21,6 @@ var (
 
 // renderFooter builds the bottom keybindings bar.
 func (m Model) renderFooter() string {
-	// `bind` is a local helper function (only exists inside renderFooter).
-	// It formats a single key + description pair: bold key, muted description.
 	bind := func(key, desc string) string {
 		k := lipgloss.NewStyle().Bold(true).Foreground(colorFg).Render(key)
 		d := lipgloss.NewStyle().Foreground(colorMuted).Render(" " + desc + "  ")
@@ -48,13 +45,12 @@ func (m Model) renderFooter() string {
 	return content + strings.Repeat(" ", gap)
 }
 
-// renderBody builds the two-panel layout that fills the space between header and footer.
+// renderBody builds the two-panel layout.
 func (m Model) renderBody(height int) string {
-	// Give the left (Agents) panel 35% of the width, right (Events) panel gets the rest.
 	leftW := m.width * 35 / 100
 	rightW := m.width - leftW
 
-	// Left panel: title color matches border color (lazygit convention).
+	// Title color matches border color (active = accent, inactive = muted).
 	leftActive := m.activePanel == panelAgents
 	leftBorderColor := colorMuted
 	if leftActive {
@@ -64,7 +60,6 @@ func (m Model) renderBody(height int) string {
 	agentsTitle := lipgloss.NewStyle().Bold(true).Foreground(leftBorderColor).Render("Agents") + agentCount
 	left := m.renderPanel(agentsTitle, m.agentsContent(), leftW, height, leftActive)
 
-	// Right panel: tab labels are embedded in the top border (lazygit style).
 	rightActive := m.activePanel == panelEvents
 	rightBorderColor := colorMuted
 	if rightActive {
@@ -72,8 +67,6 @@ func (m Model) renderBody(height int) string {
 	}
 	right := m.renderPanel(m.tabStripTitle(rightBorderColor), m.rightTabContent(), rightW, height, rightActive)
 
-	// JoinHorizontal places the two panels side by side.
-	// lipgloss.Top means align them to the top edge if they differ in height.
 	return lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 }
 
@@ -116,17 +109,15 @@ func (m Model) filesContent() string {
 		Render("Focus an agent to view its file activity.")
 }
 
-// renderPanel draws a panel whose title is embedded in the top border, lazygit-style:
+// renderPanel draws a bordered panel with the title embedded in the top border:
 //
 //	╭─Title──────────────────────────╮
 //	│ content …                      │
 //	╰────────────────────────────────╯
 //
-// title may be a pre-styled string (with ANSI codes); lipgloss.Width is used to
-// measure its visible width. `active` controls border color.
-//
-// Strategy: let lipgloss render the full bordered panel (reliable sizing on every
-// resize), then replace only the first line with our title-embedded top border.
+// title may carry ANSI codes; lipgloss.Width measures its visible width.
+// Lipgloss renders the full panel first (reliable sizing on resize), then the
+// top border line is replaced with a custom one that embeds the title.
 func (m Model) renderPanel(title, content string, width, height int, active bool) string {
 	borderColor := colorMuted
 	if active {
@@ -137,8 +128,6 @@ func (m Model) renderPanel(title, content string, width, height int, active bool
 	innerW := max(1, width-2)
 	innerH := max(1, height-2)
 
-	// Step 1: render with standard lipgloss border — this guarantees correct
-	// width/height on every terminal resize.
 	rendered := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(borderColor).
@@ -146,9 +135,8 @@ func (m Model) renderPanel(title, content string, width, height int, active bool
 		Height(innerH).
 		Render(content)
 
-	// Step 2: replace the first line with our title-embedded top border.
-	// ╭─Title──────╮  visible chars: ╭(1) + ─(1) + title + ─…(n) + ╮(1) = width
 	if title != "" {
+		// ╭─Title──╮: ╭(1) + ─(1) + title + ─…(n) + ╮(1) = width
 		titleW := lipgloss.Width(title)
 		dashCount := max(0, width-3-titleW)
 		customTop := bs.Render("╭─") + title + bs.Render(strings.Repeat("─", dashCount)+"╮")
@@ -192,7 +180,6 @@ func (m Model) agentsContent() string {
 		return lipgloss.NewStyle().Foreground(c).Render("●")
 	}
 
-	// expandIcon returns the collapse/expand indicator for a node.
 	expandIcon := func(id string, hasChildren bool) string {
 		if !hasChildren {
 			return ""
@@ -297,7 +284,6 @@ func (m Model) agentsContent() string {
 }
 
 // eventsContent returns placeholder content for the Events panel.
-// Real per-agent event logs will be shown here in v0.4.
 func (m Model) eventsContent() string {
 	return lipgloss.NewStyle().
 		Foreground(colorMuted).

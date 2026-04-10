@@ -1424,3 +1424,63 @@ func TestView_RightPanel_ShowsTabStrip(t *testing.T) {
 		t.Error("expected 'Events' tab label in view output")
 	}
 }
+
+// --- Tab click tests ---
+
+func TestTabAtX_HitsFirstTab(t *testing.T) {
+	m := newModel() // activeRightTab=0, so first tab renders as "[Events]"
+	// "[Events]" starts at x=0 and is 8 chars wide.
+	for x := 0; x < len("[Events]"); x++ {
+		idx, ok := m.tabAtX(x)
+		if !ok {
+			t.Errorf("x=%d: expected hit, got miss", x)
+		}
+		if idx != 0 {
+			t.Errorf("x=%d: expected tab 0, got %d", x, idx)
+		}
+	}
+}
+
+func TestTabAtX_HitsSecondTab(t *testing.T) {
+	m := newModel() // activeRightTab=0, so second tab renders as "Files"
+	// "[Events]" (8) + " " (1) = offset 9 for "Files" (5 chars wide)
+	start := len("[Events]") + 1
+	for x := start; x < start+len("Files"); x++ {
+		idx, ok := m.tabAtX(x)
+		if !ok {
+			t.Errorf("x=%d: expected hit on Files, got miss", x)
+		}
+		if idx != 1 {
+			t.Errorf("x=%d: expected tab 1, got %d", x, idx)
+		}
+	}
+}
+
+func TestTabAtX_MissOnGap(t *testing.T) {
+	m := newModel()
+	// x past all tabs should return false.
+	_, ok := m.tabAtX(999)
+	if ok {
+		t.Error("expected miss for x past all tabs")
+	}
+}
+
+func TestMouseClick_SwitchesTab(t *testing.T) {
+	m := newModel()
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = next.(Model)
+
+	leftW := m.width * 35 / 100
+	// Click on "Files" in the top border (Y=0).
+	// Strip starts at x = leftW+2. "Files" starts after "[Events] " = 9 chars.
+	filesX := leftW + 2 + len("[Events]") + 1
+	next, _ = m.Update(tea.MouseMsg{
+		X:      filesX,
+		Y:      0,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+	})
+	if next.(Model).activeRightTab != 1 {
+		t.Errorf("expected activeRightTab=1 after clicking Files, got %d", next.(Model).activeRightTab)
+	}
+}
