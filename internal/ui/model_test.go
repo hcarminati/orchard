@@ -580,8 +580,7 @@ func TestView_HookError_ErroredNodeAtTop(t *testing.T) {
 	ch := make(chan agent.Event, 10)
 	m := New(nil, ch)
 
-	var next tea.Model = m
-	next, _ = m.Update(hookEventMsg{event: agent.Event{Type: "PreToolUse", SessionID: "s1", Timestamp: time.Now()}})
+	next, _ := m.Update(hookEventMsg{event: agent.Event{Type: "PreToolUse", SessionID: "s1", Timestamp: time.Now()}})
 	next, _ = next.Update(hookEventMsg{event: agent.Event{Type: "PreToolUse", SessionID: "s2", Timestamp: time.Now()}})
 	next, _ = next.Update(hookEventMsg{event: agent.Event{Type: "Error", SessionID: "s2", Message: "panic", Timestamp: time.Now()}})
 	next, _ = next.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
