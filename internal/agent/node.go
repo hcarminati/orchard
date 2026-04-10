@@ -19,11 +19,6 @@ const (
 	StatusError
 )
 
-// terminal returns true if the status is a final, non-recoverable state.
-func (s Status) terminal() bool {
-	return s == StatusDone || s == StatusError
-}
-
 // Model identifies which Claude model the agent is running.
 type Model string
 
