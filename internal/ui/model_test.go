@@ -175,8 +175,9 @@ func TestView_ShowsAgentCount_WhenSessionLoaded(t *testing.T) {
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	view := next.(Model).View()
 
-	if !strings.Contains(view, "2 agents") {
-		t.Errorf("expected '2 agents' in View header, got:\n%s", view)
+	// Count is now embedded in the Agents panel border title as "· 2".
+	if !strings.Contains(view, "· 2") {
+		t.Errorf("expected '· 2' in Agents panel border, got:\n%s", view)
 	}
 }
 
@@ -1180,8 +1181,8 @@ func TestFilter_FooterShowsCurrentMode(t *testing.T) {
 // --- Mouse click tests ---
 
 // contentTop is the Y offset where agent tree content rows begin:
-// header (1) + top border (1) + title row (1) = 3.
-const contentTop = headerHeight + 1 + 1
+// top border (1) only — the header row has been removed.
+const contentTop = 1
 
 // mouseClick builds a left-button press MouseMsg at the given screen coordinates.
 func mouseClick(x, y int) tea.MouseMsg {
@@ -1327,5 +1328,99 @@ func TestUpdate_MouseClick_DoesNotBreakKeyboardNavigation(t *testing.T) {
 	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
 	if next.(Model).cursor != 1 {
 		t.Errorf("expected cursor 1 after k following mouse click, got %d", next.(Model).cursor)
+	}
+}
+
+// --- Right-panel tab strip tests ---
+
+func TestUpdate_RightTab_InitialIsZero(t *testing.T) {
+	m := newModel()
+	if m.activeRightTab != 0 {
+		t.Errorf("expected activeRightTab=0 initially, got %d", m.activeRightTab)
+	}
+}
+
+func TestUpdate_RightBracket_CyclesForward(t *testing.T) {
+	// With only one tab ]  still wraps safely back to 0.
+	m := newModel()
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("]")})
+	got := next.(Model)
+	want := (0 + 1) % len(rightTabs)
+	if got.activeRightTab != want {
+		t.Errorf("] cycle: got activeRightTab=%d, want %d", got.activeRightTab, want)
+	}
+}
+
+func TestUpdate_LeftBracket_CyclesBackward(t *testing.T) {
+	// With only one tab [ wraps safely back to 0.
+	m := newModel()
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("[")})
+	got := next.(Model)
+	n := len(rightTabs)
+	want := (0 - 1 + n) % n
+	if got.activeRightTab != want {
+		t.Errorf("[ cycle: got activeRightTab=%d, want %d", got.activeRightTab, want)
+	}
+}
+
+func TestRightTabCycling_WrapsAtBothEnds(t *testing.T) {
+	// Use a temporary replacement of rightTabs to exercise wrapping with >1 tab.
+	orig := rightTabs
+	rightTabs = []rightTab{tabEvents, 1, 2} // 3 tabs
+	defer func() { rightTabs = orig }()
+
+	m := newModel()
+
+	// ] from index 0 → 1 → 2 → wraps to 0.
+	for i, wantIdx := range []int{1, 2, 0} {
+		next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("]")})
+		m = next.(Model)
+		if m.activeRightTab != wantIdx {
+			t.Errorf("] step %d: got activeRightTab=%d, want %d", i, m.activeRightTab, wantIdx)
+		}
+	}
+
+	// [ from index 0 → 2 → 1 → 0.
+	for i, wantIdx := range []int{2, 1, 0} {
+		next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("[")})
+		m = next.(Model)
+		if m.activeRightTab != wantIdx {
+			t.Errorf("[ step %d: got activeRightTab=%d, want %d", i, m.activeRightTab, wantIdx)
+		}
+	}
+}
+
+func TestTabStripTitle_LabelsPresent(t *testing.T) {
+	m := newModel()
+	strip := m.tabStripTitle(colorAccent)
+	for _, tab := range rightTabs {
+		if !strings.Contains(strip, tab.label()) {
+			t.Errorf("tab strip title missing label %q", tab.label())
+		}
+	}
+}
+
+func TestTabStripTitle_ActiveTabDistinct(t *testing.T) {
+	m := newModel()
+	// All tab labels must appear regardless of which is active.
+	for range rightTabs {
+		strip := m.tabStripTitle(colorAccent)
+		for _, tab := range rightTabs {
+			if !strings.Contains(strip, tab.label()) {
+				t.Errorf("tab strip title missing label %q at activeRightTab=%d", tab.label(), m.activeRightTab)
+			}
+		}
+		m.activeRightTab = (m.activeRightTab + 1) % len(rightTabs)
+	}
+}
+
+func TestView_RightPanel_ShowsTabStrip(t *testing.T) {
+	m := newModel()
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	view := next.(Model).View()
+
+	// The "Events" tab label must appear somewhere in the rendered view.
+	if !strings.Contains(view, "Events") {
+		t.Error("expected 'Events' tab label in view output")
 	}
 }

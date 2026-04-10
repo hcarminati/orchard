@@ -20,25 +20,6 @@ var (
 	colorFg     = lipgloss.Color("#F9FAFB") // near-white — primary text
 )
 
-// renderHeader builds the top bar: "orchard" on the left, session status on the right.
-func (m Model) renderHeader() string {
-	left := lipgloss.NewStyle().Bold(true).Foreground(colorAccent).Render(" orchard")
-
-	var statusText string
-	if m.hasSession {
-		statusText = fmt.Sprintf("%d agents", len(m.agents.Nodes))
-	} else {
-		statusText = "waiting for session…"
-	}
-	right := lipgloss.NewStyle().Foreground(colorMuted).Render(statusText + " ")
-
-	// lipgloss.Width measures the visible width of a styled string (ignoring invisible
-	// ANSI escape codes that carry the color information).
-	// We fill the gap between left and right with spaces to push them to opposite edges.
-	gap := max(0, m.width-lipgloss.Width(left)-lipgloss.Width(right))
-	return left + strings.Repeat(" ", gap) + right
-}
-
 // renderFooter builds the bottom keybindings bar.
 func (m Model) renderFooter() string {
 	// `bind` is a local helper function (only exists inside renderFooter).
@@ -57,6 +38,9 @@ func (m Model) renderFooter() string {
 		content += bind("enter", "mark winner")
 	}
 	content += bind("f", "filter:"+m.statusFilter.label())
+	if len(rightTabs) > 1 {
+		content += bind("[/]", "switch tab")
+	}
 	content += bind("tab", "switch panel") + bind("q", "quit")
 
 	// Pad to full width so the footer bar extends across the whole terminal.
@@ -70,42 +54,110 @@ func (m Model) renderBody(height int) string {
 	leftW := m.width * 35 / 100
 	rightW := m.width - leftW
 
-	// Render each panel, passing whether it's currently active (focused).
-	left := m.renderPanel("Agents", m.agentsContent(), leftW, height, m.activePanel == panelAgents)
-	right := m.renderPanel("Events", m.eventsContent(), rightW, height, m.activePanel == panelEvents)
+	// Left panel: title color matches border color (lazygit convention).
+	leftActive := m.activePanel == panelAgents
+	leftBorderColor := colorMuted
+	if leftActive {
+		leftBorderColor = colorAccent
+	}
+	agentCount := lipgloss.NewStyle().Foreground(leftBorderColor).Render(fmt.Sprintf(" · %d", len(m.agents.Nodes)))
+	agentsTitle := lipgloss.NewStyle().Bold(true).Foreground(leftBorderColor).Render("Agents") + agentCount
+	left := m.renderPanel(agentsTitle, m.agentsContent(), leftW, height, leftActive)
+
+	// Right panel: tab labels are embedded in the top border (lazygit style).
+	rightActive := m.activePanel == panelEvents
+	rightBorderColor := colorMuted
+	if rightActive {
+		rightBorderColor = colorAccent
+	}
+	right := m.renderPanel(m.tabStripTitle(rightBorderColor), m.rightTabContent(), rightW, height, rightActive)
 
 	// JoinHorizontal places the two panels side by side.
 	// lipgloss.Top means align them to the top edge if they differ in height.
 	return lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 }
 
-// renderPanel draws a single bordered panel with a title and content inside.
-// `active` controls whether the border is highlighted (focused) or muted (unfocused).
+// tabStripTitle returns the tab labels formatted for embedding in the top border.
+// The active tab is wrapped in brackets; inactive tabs are muted.
+// borderColor is passed so the active label can match the panel border.
+func (m Model) tabStripTitle(borderColor lipgloss.Color) string {
+	activeStyle := lipgloss.NewStyle().Bold(true).Foreground(borderColor)
+	inactiveStyle := lipgloss.NewStyle().Foreground(colorMuted)
+
+	var parts []string
+	for i, t := range rightTabs {
+		if i == m.activeRightTab {
+			parts = append(parts, activeStyle.Render("["+t.label()+"]"))
+		} else {
+			parts = append(parts, inactiveStyle.Render(t.label()))
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+// rightTabContent returns the body content for the currently active right panel tab.
+func (m Model) rightTabContent() string {
+	if m.activeRightTab < len(rightTabs) {
+		switch rightTabs[m.activeRightTab] {
+		case tabEvents:
+			return m.eventsContent()
+		case tabFiles:
+			return m.filesContent()
+		}
+	}
+	return ""
+}
+
+// filesContent returns placeholder content for the Files panel.
+func (m Model) filesContent() string {
+	return lipgloss.NewStyle().
+		Foreground(colorMuted).
+		Padding(0, 1).
+		Render("Focus an agent to view its file activity.")
+}
+
+// renderPanel draws a panel whose title is embedded in the top border, lazygit-style:
+//
+//	┌─Title──────────────────────────┐
+//	│ content …                      │
+//	└────────────────────────────────┘
+//
+// title may be a pre-styled string (with ANSI codes); lipgloss.Width is used to
+// measure its visible width. `active` controls border color.
 func (m Model) renderPanel(title, content string, width, height int, active bool) string {
-	// Focused panel gets the accent color, unfocused gets a subtle gray.
 	borderColor := colorMuted
 	if active {
 		borderColor = colorAccent
 	}
 
-	// The border takes 1 character on each side, so the inner content area
-	// is 2 columns narrower and 2 rows shorter than the outer panel dimensions.
+	bs := lipgloss.NewStyle().Foreground(borderColor)
 	innerW := max(1, width-2)
 	innerH := max(1, height-2)
 
-	titleStr := lipgloss.NewStyle().Bold(true).Foreground(colorFg).Padding(0, 1).Render(title)
+	// Top border: ╭─Title──────╮  (rounded corners, title after leading dash)
+	titleW := lipgloss.Width(title)
+	// Visible chars used: ╭ (1) + ─ (1) + title + ─…─ + ╮ (1) = width
+	dashCount := max(0, width-3-titleW)
+	var topBorder string
+	if title == "" {
+		topBorder = bs.Render("╭" + strings.Repeat("─", width-2) + "╮")
+	} else {
+		topBorder = bs.Render("╭─") + title + bs.Render(strings.Repeat("─", dashCount)+"╮")
+	}
+	bottomBorder := bs.Render("╰" + strings.Repeat("─", width-2) + "╯")
 
-	// Build the panel style: rounded corners, colored border, fixed inner size.
-	// Setting Width and Height here ensures the panel always fills its allocated space,
-	// even if the content is shorter than the panel — lipgloss pads with empty lines.
-	style := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(borderColor).
-		Width(innerW).
-		Height(innerH)
+	// Render content into a fixed innerW×innerH box so side borders align correctly.
+	contentBox := lipgloss.NewStyle().Width(innerW).Height(innerH).Render(content)
+	lines := strings.Split(contentBox, "\n")
 
-	// Stack the title on top of the content, then render them inside the bordered box.
-	return style.Render(lipgloss.JoinVertical(lipgloss.Left, titleStr, content))
+	rows := make([]string, 0, 2+len(lines))
+	rows = append(rows, topBorder)
+	for _, line := range lines {
+		rows = append(rows, bs.Render("│")+line+bs.Render("│"))
+	}
+	rows = append(rows, bottomBorder)
+
+	return strings.Join(rows, "\n")
 }
 
 // agentsContent renders the Agents panel body.

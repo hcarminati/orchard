@@ -29,6 +29,30 @@ const (
 	panelEvents
 )
 
+// rightTab identifies a tab in the right panel tab strip.
+type rightTab int
+
+const (
+	tabEvents rightTab = iota
+	tabFiles
+)
+
+// rightTabs is the ordered list of tabs shown in the right panel.
+// Adding a new tab only requires appending it here and adding a case to label().
+var rightTabs = []rightTab{tabEvents, tabFiles}
+
+// label returns the display name for a right panel tab.
+func (t rightTab) label() string {
+	switch t {
+	case tabEvents:
+		return "Events"
+	case tabFiles:
+		return "Files"
+	default:
+		return "?"
+	}
+}
+
 // filterMode controls which nodes are shown in the agent tree.
 type filterMode int
 
@@ -50,11 +74,8 @@ func (f filterMode) label() string {
 	}
 }
 
-// Fixed heights for the header and footer rows (in terminal lines).
-const (
-	headerHeight = 1
-	footerHeight = 1
-)
+// footerHeight is the number of terminal lines reserved for the keybindings bar.
+const footerHeight = 1
 
 // idleDuration is how long after the last PostToolUse event before a session
 // transitions from Running to Idle.
@@ -100,6 +121,7 @@ type Model struct {
 	collapsed       map[string]bool    // set of node IDs whose subtrees are currently hidden
 	collapsedGroups map[string]bool    // set of GroupIDs whose members are currently hidden
 	statusFilter    filterMode         // which nodes to show in the agent tree
+	activeRightTab  int                // index into rightTabs for the currently shown right-panel tab
 }
 
 // New creates a Model initialized with session data and a hook event channel.
@@ -208,6 +230,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if newLen := len(m.visibleNodes()); m.cursor >= newLen {
 				m.cursor = max(0, newLen-1)
 			}
+		case "[":
+			// Cycle left through right-panel tabs, wrapping from first to last.
+			n := len(rightTabs)
+			m.activeRightTab = (m.activeRightTab - 1 + n) % n
+		case "]":
+			// Cycle right through right-panel tabs, wrapping from last to first.
+			m.activeRightTab = (m.activeRightTab + 1) % len(rightTabs)
 		case "f":
 			// Cycle filter: All → Running → Errored → All.
 			m.statusFilter = (m.statusFilter + 1) % 3
@@ -236,8 +265,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
 			leftW := m.width * 35 / 100
 			if msg.X < leftW {
-				// Content rows begin after: header (1) + top border (1) + title row (1).
-				const contentTop = headerHeight + 1 + 1
+				// Content rows begin after: top border (1). No header row any more.
+				const contentTop = 1
 				idx := msg.Y - contentTop
 				vn := m.visibleNodes()
 				if idx >= 0 && idx < len(vn) {
@@ -315,14 +344,11 @@ func (m Model) View() string {
 		return "loading…"
 	}
 
-	// The body gets whatever height is left after the header and footer take their rows.
-	bodyH := m.height - headerHeight - footerHeight
+	// The body fills everything except the single footer row.
+	bodyH := m.height - footerHeight
 
-	// JoinVertical stacks strings on top of each other with newlines between them.
-	// lipgloss.Left means left-align each piece.
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
-		m.renderHeader(),
 		m.renderBody(bodyH),
 		m.renderFooter(),
 	)
