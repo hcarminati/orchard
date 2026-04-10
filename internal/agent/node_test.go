@@ -229,6 +229,36 @@ func TestStatus_NoTransitionFromError(t *testing.T) {
 	}
 }
 
+func TestApplyEvent_ErrorSetsStatusAndMessage(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "s1", Status: StatusRunning})
+	tree.ApplyEvent(Event{Type: "Error", SessionID: "s1", Message: "context deadline exceeded", Timestamp: time.Now()})
+
+	node := tree.Nodes["s1"]
+	if node.Status != StatusError {
+		t.Errorf("expected StatusError after Error event, got %d", node.Status)
+	}
+	if node.ErrorMsg != "context deadline exceeded" {
+		t.Errorf("expected ErrorMsg 'context deadline exceeded', got %q", node.ErrorMsg)
+	}
+}
+
+func TestApplyEvent_ErrorOnNewNode(t *testing.T) {
+	tree := NewTree()
+	tree.ApplyEvent(Event{Type: "Error", SessionID: "s-new", Message: "tool panicked", Timestamp: time.Now()})
+
+	node := tree.Nodes["s-new"]
+	if node == nil {
+		t.Fatal("expected node to be created")
+	}
+	if node.Status != StatusError {
+		t.Errorf("expected StatusError, got %d", node.Status)
+	}
+	if node.ErrorMsg != "tool panicked" {
+		t.Errorf("expected ErrorMsg 'tool panicked', got %q", node.ErrorMsg)
+	}
+}
+
 func TestNodeFields_ModelToolsSkillsPrompt(t *testing.T) {
 	n := NewNode("x")
 	n.Model = ModelSonnet
