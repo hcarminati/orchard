@@ -31,6 +31,27 @@ const (
 	panelEvents
 )
 
+// filterMode controls which nodes are shown in the agent tree.
+type filterMode int
+
+const (
+	filterAll     filterMode = iota // show every node
+	filterRunning                   // show only nodes with StatusRunning
+	filterErrored                   // show only nodes with StatusError
+)
+
+// filterLabel returns the display name for the current filter mode.
+func (f filterMode) label() string {
+	switch f {
+	case filterRunning:
+		return "running"
+	case filterErrored:
+		return "errored"
+	default:
+		return "all"
+	}
+}
+
 // Fixed heights for the header and footer rows (in terminal lines).
 const (
 	headerHeight = 1
@@ -101,6 +122,7 @@ type Model struct {
 	cursor          int             // index into visibleNodes() for the focused node
 	collapsed       map[string]bool // set of node IDs whose subtrees are currently hidden
 	collapsedGroups map[string]bool // set of GroupIDs whose members are currently hidden
+	statusFilter    filterMode      // which nodes to show in the agent tree
 }
 
 // New creates a Model initialized with session data and a hook event channel.
@@ -114,13 +136,14 @@ func New(nodes []agent.Node, eventCh <-chan agent.Event) Model {
 		tree.AddNode(n)
 	}
 	return Model{
-		activePanel: panelAgents,
-		agents:      tree,
-		hasSession:  len(nodes) > 0,
-		eventCh:     eventCh,
+		activePanel:     panelAgents,
+		agents:          tree,
+		hasSession:      len(nodes) > 0,
+		eventCh:         eventCh,
 		timerGen:        make(map[string]int),
 		collapsed:       make(map[string]bool),
 		collapsedGroups: make(map[string]bool),
+		statusFilter:    filterAll,
 	}
 }
 
@@ -208,6 +231,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if newLen := len(m.visibleNodes()); m.cursor >= newLen {
 				m.cursor = max(0, newLen-1)
 			}
+		case "f":
+			// Cycle filter: All → Running → Errored → All.
+			m.statusFilter = (m.statusFilter + 1) % 3
+			m.cursor = 0
 		case "enter":
 			vn := m.visibleNodes()
 			if m.cursor < len(vn) {
@@ -332,6 +359,7 @@ func (m Model) renderFooter() string {
 	if m.cursorInGroup() {
 		content += bind("enter", "mark winner")
 	}
+	content += bind("f", "filter:"+m.statusFilter.label())
 	content += bind("tab", "switch panel") + bind("q", "quit")
 
 	// Pad to full width so the footer bar extends across the whole terminal.
@@ -401,9 +429,22 @@ func (m Model) sortedRoots() []string {
 	return out
 }
 
+// nodeMatchesFilter reports whether n should be shown under the current filter.
+func (m Model) nodeMatchesFilter(n *agent.Node) bool {
+	switch m.statusFilter {
+	case filterRunning:
+		return n.Status == agent.StatusRunning
+	case filterErrored:
+		return n.Status == agent.StatusError
+	default: // filterAll
+		return true
+	}
+}
+
 // visibleNodes returns the flat, pre-order depth-first traversal of the agent
 // tree. Collapsed nodes hide their subtrees; collapsed parallel groups hide
-// their members entirely. Parallel groups are represented by a virtual header
+// their members entirely. Nodes excluded by the status filter are hidden along
+// with their subtrees. Parallel groups are represented by a virtual header
 // row (groupID non-empty, id empty) that the cursor can land on.
 func (m Model) visibleNodes() []visibleNode {
 	var result []visibleNode
@@ -413,6 +454,11 @@ func (m Model) visibleNodes() []visibleNode {
 	walk = func(id string, depth int) {
 		node := m.agents.Nodes[id]
 		if node == nil {
+			return
+		}
+
+		// Status filter: skip nodes (and their subtrees) that don't match.
+		if !m.nodeMatchesFilter(node) {
 			return
 		}
 
