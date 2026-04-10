@@ -6,8 +6,10 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	// Bubbletea is the TUI framework. We alias it as `tea` — that's the convention
@@ -25,25 +27,42 @@ import (
 var version = "dev"
 
 func main() {
-	// --- flags ---
-	showVersion := flag.Bool("version", false, "print version and exit")
-	port := flag.String("port", "7070", "port for the Claude Code hook server")
-	project := flag.String("project", "", "override the project working directory (default: current directory)")
-	flag.Parse()
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+// run parses args and starts Orchard. It returns an exit code so it can be
+// tested without calling os.Exit directly.
+func run(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("orchard", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+
+	showVersion := fs.Bool("version", false, "print version and exit")
+	portStr := fs.String("port", "7070", "port for the Claude Code hook server")
+	project := fs.String("project", "", "override the project working directory (default: current directory)")
+
+	if err := fs.Parse(args); err != nil {
+		// flag.ContinueOnError already wrote the error to stderr.
+		return 2
+	}
 
 	if *showVersion {
-		fmt.Println("orchard", version)
-		os.Exit(0)
+		fmt.Fprintln(stdout, "orchard", version)
+		return 0
+	}
+
+	port, err := parsePort(*portStr)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: invalid --port %q: %v\n", *portStr, err)
+		return 1
 	}
 
 	// Determine which working directory to filter hook events for.
 	cwd := *project
 	if cwd == "" {
-		var err error
 		cwd, err = os.Getwd()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: could not determine working directory: %v\n", err)
-			os.Exit(1)
+			fmt.Fprintf(stderr, "error: could not determine working directory: %v\n", err)
+			return 1
 		}
 	}
 
@@ -51,7 +70,7 @@ func main() {
 	// Errors here are non-fatal: the TUI will show "waiting for session…" instead.
 	initialNodes, err := session.Load(cwd)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not load session data: %v\n", err)
+		fmt.Fprintf(stderr, "warning: could not load session data: %v\n", err)
 	}
 
 	// Create a buffered channel for hook events.
@@ -61,12 +80,13 @@ func main() {
 	// Start the hook server in the background. It blocks on ListenAndServe,
 	// so it must run in its own goroutine. http.ErrServerClosed is expected
 	// on clean shutdown and is not logged.
-	hookServer := hooks.NewServer(cwd, eventCh, ":"+*port)
+	addr := fmt.Sprintf(":%d", port)
+	hookServer := hooks.NewServer(cwd, eventCh, addr)
 	go func() {
 		if err := hookServer.Start(); err != nil && err != http.ErrServerClosed {
 			// Log to stderr but do not crash the TUI — the user can still use
 			// Orchard in read-only mode (session JSONL only) if the port is taken.
-			fmt.Fprintf(os.Stderr, "hook server: %v\n", err)
+			fmt.Fprintf(stderr, "hook server: %v\n", err)
 		}
 	}()
 	defer func() {
@@ -89,7 +109,20 @@ func main() {
 	if _, err := p.Run(); err != nil {
 		// If something goes wrong, print the error to stderr (not stdout) and
 		// exit with a non-zero code so scripts can detect the failure.
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
 	}
+	return 0
+}
+
+// parsePort validates that s is an integer in the valid TCP port range [1, 65535].
+func parsePort(s string) (int, error) {
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, fmt.Errorf("must be an integer")
+	}
+	if n < 1 || n > 65535 {
+		return 0, fmt.Errorf("must be between 1 and 65535")
+	}
+	return n, nil
 }
