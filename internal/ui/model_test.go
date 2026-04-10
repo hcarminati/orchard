@@ -6,6 +6,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/hcarminati/orchard/internal/agent"
 )
@@ -451,6 +452,149 @@ func TestUpdate_EnterOnUngroupedNode_NoEffect(t *testing.T) {
 	// No GroupID means no winner should be set.
 	if got.agents.Nodes["x"].Winner {
 		t.Error("expected Winner to remain false for ungrouped node")
+	}
+}
+
+// --- Status dot color tests ---
+
+func TestStatusColor_CorrectPerStatus(t *testing.T) {
+	cases := []struct {
+		status agent.Status
+		want   lipgloss.Color
+	}{
+		{agent.StatusRunning, colorGreen},
+		{agent.StatusIdle, colorYellow},
+		{agent.StatusDone, colorMuted},
+		{agent.StatusError, colorRed},
+	}
+	for _, tc := range cases {
+		got := statusColor(tc.status)
+		if got != tc.want {
+			t.Errorf("statusColor(%d) = %v, want %v", tc.status, got, tc.want)
+		}
+	}
+}
+
+func TestStatusColor_AllDistinct(t *testing.T) {
+	statuses := []agent.Status{
+		agent.StatusRunning,
+		agent.StatusIdle,
+		agent.StatusDone,
+		agent.StatusError,
+	}
+	seen := map[lipgloss.Color]agent.Status{}
+	for _, s := range statuses {
+		c := statusColor(s)
+		if c == "" {
+			t.Errorf("statusColor(%d) returned empty color (would be invisible in any terminal)", s)
+		}
+		if prev, exists := seen[c]; exists {
+			t.Errorf("statusColor(%d) and statusColor(%d) both return %v — statuses must have distinct colors", s, prev, c)
+		}
+		seen[c] = s
+	}
+}
+
+// --- Error surfacing tests ---
+
+func TestView_ErroredNodeAtTop(t *testing.T) {
+	nodes := []agent.Node{
+		{ID: "a", Name: "agent-ok", Status: agent.StatusRunning},
+		{ID: "b", Name: "agent-err", Status: agent.StatusError, ErrorMsg: "something broke"},
+	}
+	m := New(nodes, nil)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	view := next.(Model).View()
+
+	posOk := strings.Index(view, "agent-ok")
+	posErr := strings.Index(view, "agent-err")
+	if posErr == -1 {
+		t.Fatal("expected 'agent-err' in view")
+	}
+	if posOk == -1 {
+		t.Fatal("expected 'agent-ok' in view")
+	}
+	if posErr >= posOk {
+		t.Errorf("expected errored node to appear before non-errored node in view")
+	}
+}
+
+func TestView_ErrorMessageInline(t *testing.T) {
+	nodes := []agent.Node{
+		{ID: "a", Name: "agent-err", Status: agent.StatusError, ErrorMsg: "panic"},
+	}
+	m := New(nodes, nil)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	view := next.(Model).View()
+
+	if !strings.Contains(view, "panic") {
+		t.Errorf("expected error message in view, got:\n%s", view)
+	}
+}
+
+func TestView_NoErrorMessage_WhenErrorMsgEmpty(t *testing.T) {
+	nodes := []agent.Node{
+		{ID: "a", Name: "agent-err", Status: agent.StatusError, ErrorMsg: ""},
+	}
+	m := New(nodes, nil)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	view := next.(Model).View()
+
+	// Should not contain the ✗ indicator when there is no error message.
+	if strings.Contains(view, "✗") {
+		t.Errorf("expected no ✗ indicator when ErrorMsg is empty, got:\n%s", view)
+	}
+}
+
+func TestSortedRoots_ErroredFirst(t *testing.T) {
+	nodes := []agent.Node{
+		{ID: "a", Status: agent.StatusRunning},
+		{ID: "b", Status: agent.StatusError},
+		{ID: "c", Status: agent.StatusIdle},
+		{ID: "d", Status: agent.StatusError},
+	}
+	m := New(nodes, nil)
+	sr := m.sortedRoots()
+
+	if len(sr) != 4 {
+		t.Fatalf("expected 4 roots, got %d", len(sr))
+	}
+	// First two should be error nodes.
+	for _, id := range sr[:2] {
+		n := m.agents.Nodes[id]
+		if n.Status != agent.StatusError {
+			t.Errorf("expected first two sorted roots to be StatusError, got node %q with status %d", id, n.Status)
+		}
+	}
+	// Remaining should be non-error.
+	for _, id := range sr[2:] {
+		n := m.agents.Nodes[id]
+		if n.Status == agent.StatusError {
+			t.Errorf("expected non-error nodes after errored ones, got node %q with StatusError", id)
+		}
+	}
+}
+
+func TestView_HookError_ErroredNodeAtTop(t *testing.T) {
+	// Verify that an Error hook event causes the node to float to the top.
+	ch := make(chan agent.Event, 10)
+	m := New(nil, ch)
+
+	var next tea.Model = m
+	next, _ = m.Update(hookEventMsg{event: agent.Event{Type: "PreToolUse", SessionID: "s1", Timestamp: time.Now()}})
+	next, _ = next.Update(hookEventMsg{event: agent.Event{Type: "PreToolUse", SessionID: "s2", Timestamp: time.Now()}})
+	next, _ = next.Update(hookEventMsg{event: agent.Event{Type: "Error", SessionID: "s2", Message: "panic", Timestamp: time.Now()}})
+	next, _ = next.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+
+	view := next.(Model).View()
+	// Session IDs "s1"/"s2" are short so no "session:" prefix is added.
+	posS1 := strings.Index(view, " s1")
+	posS2 := strings.Index(view, " s2")
+	if posS1 == -1 || posS2 == -1 {
+		t.Fatalf("expected both sessions in view, got:\n%s", view)
+	}
+	if posS2 >= posS1 {
+		t.Errorf("expected errored session s2 to appear before s1 in view")
 	}
 }
 

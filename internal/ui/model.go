@@ -172,7 +172,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// so it toggles: 0 → 1 → 0 → 1 ...
 			m.activePanel = (m.activePanel + 1) % 2
 		case "j", "down":
-			n := len(m.agents.Roots)
+			n := len(m.sortedRoots())
 			if n > 0 && m.cursor < n-1 {
 				m.cursor++
 			}
@@ -181,8 +181,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cursor--
 			}
 		case "enter":
-			if m.cursor < len(m.agents.Roots) {
-				id := m.agents.Roots[m.cursor]
+			sr := m.sortedRoots()
+			if m.cursor < len(sr) {
+				id := sr[m.cursor]
 				if focused, ok := m.agents.Nodes[id]; ok && focused.GroupID != "" {
 					gid := focused.GroupID
 					// Un-mark all siblings in this group, then mark the focused node.
@@ -351,12 +352,31 @@ func (m Model) renderPanel(title, content string, width, height int, active bool
 	return style.Render(lipgloss.JoinVertical(lipgloss.Left, titleStr, content))
 }
 
+// sortedRoots returns root IDs with StatusError nodes first, preserving
+// relative order within each tier. This ensures errored agents are always
+// visible at the top of the list without requiring the user to scroll.
+func (m Model) sortedRoots() []string {
+	out := make([]string, 0, len(m.agents.Roots))
+	for _, id := range m.agents.Roots {
+		if n := m.agents.Nodes[id]; n != nil && n.Status == agent.StatusError {
+			out = append(out, id)
+		}
+	}
+	for _, id := range m.agents.Roots {
+		if n := m.agents.Nodes[id]; n != nil && n.Status != agent.StatusError {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
 // cursorInGroup reports whether the currently focused node belongs to a parallel group.
 func (m Model) cursorInGroup() bool {
-	if m.cursor >= len(m.agents.Roots) {
+	sr := m.sortedRoots()
+	if m.cursor >= len(sr) {
 		return false
 	}
-	n := m.agents.Nodes[m.agents.Roots[m.cursor]]
+	n := m.agents.Nodes[sr[m.cursor]]
 	return n != nil && n.GroupID != ""
 }
 
@@ -380,8 +400,9 @@ func (m Model) agentsContent() string {
 
 	var lines []string
 	seen := map[string]bool{} // groupIDs whose headers have been emitted
+	sr := m.sortedRoots()
 
-	for i, id := range m.agents.Roots {
+	for i, id := range sr {
 		n := m.agents.Nodes[id]
 		if n == nil {
 			continue
@@ -393,7 +414,11 @@ func (m Model) agentsContent() string {
 			if i == m.cursor {
 				prefix = "> "
 			}
-			lines = append(lines, prefix+dot(statusColor(n.Status))+" "+n.Name)
+			line := prefix + dot(statusColor(n.Status)) + " " + n.Name
+			if n.Status == agent.StatusError && n.ErrorMsg != "" {
+				line += " " + lipgloss.NewStyle().Foreground(colorRed).Render("✗ "+n.ErrorMsg)
+			}
+			lines = append(lines, line)
 			continue
 		}
 
@@ -403,10 +428,10 @@ func (m Model) agentsContent() string {
 		}
 		seen[n.GroupID] = true
 
-		// Collect all group members (in Roots order) and check for a winner.
+		// Collect all group members (in sorted order) and check for a winner.
 		var memberIdxs []int
 		hasWinner := false
-		for j, rid := range m.agents.Roots {
+		for j, rid := range sr {
 			rn := m.agents.Nodes[rid]
 			if rn != nil && rn.GroupID == n.GroupID {
 				memberIdxs = append(memberIdxs, j)
@@ -423,7 +448,7 @@ func (m Model) agentsContent() string {
 
 		// Emit each group member indented under the header.
 		for _, mi := range memberIdxs {
-			mn := m.agents.Nodes[m.agents.Roots[mi]]
+			mn := m.agents.Nodes[sr[mi]]
 			if mn == nil {
 				continue
 			}
@@ -436,6 +461,9 @@ func (m Model) agentsContent() string {
 				indicator = " ✓"
 			}
 			line := prefix + dot(statusColor(mn.Status)) + " " + mn.Name + indicator
+			if mn.Status == agent.StatusError && mn.ErrorMsg != "" {
+				line += " " + lipgloss.NewStyle().Foreground(colorRed).Render("✗ "+mn.ErrorMsg)
+			}
 			if hasWinner && !mn.Winner {
 				line = lipgloss.NewStyle().Foreground(colorMuted).Render(line)
 			}

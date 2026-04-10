@@ -61,6 +61,8 @@ type Node struct {
 	Model Model
 	// Status is the current lifecycle state of this agent.
 	Status Status
+	// ErrorMsg holds the error message when Status is StatusError.
+	ErrorMsg string
 	// GroupID links nodes that are parallel competing runs of the same task.
 	GroupID string
 	// Winner is true when this node has been chosen as the best result among
@@ -153,5 +155,8 @@ func (t *Tree) ApplyEvent(e Event) {
 		node.Status = StatusIdle
 	case "PreToolUse":
 		node.Status = StatusRunning
+	case "Error":
+		node.Status = StatusError
+		node.ErrorMsg = e.Message
 	}
 }
