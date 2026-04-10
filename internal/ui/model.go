@@ -17,17 +17,37 @@ import (
 	"github.com/hcarminati/orchard/internal/agent"
 )
 
-// panel is a custom type representing which panel is currently focused.
-// Using a named type (instead of a plain int) makes the code self-documenting
-// and prevents accidentally mixing it up with other integers.
+// panel identifies which panel currently has keyboard focus.
 type panel int
 
-// These are the two panels. `iota` is a Go shortcut that auto-increments:
-// panelAgents = 0, panelEvents = 1.
 const (
 	panelAgents panel = iota
 	panelEvents
 )
+
+// rightTab identifies a tab in the right panel tab strip.
+type rightTab int
+
+const (
+	tabEvents rightTab = iota
+	tabFiles
+)
+
+// rightTabs is the ordered list of tabs shown in the right panel.
+// Adding a new tab only requires appending it here and adding a case to label().
+var rightTabs = []rightTab{tabEvents, tabFiles}
+
+// label returns the display name for a right panel tab.
+func (t rightTab) label() string {
+	switch t {
+	case tabEvents:
+		return "Events"
+	case tabFiles:
+		return "Files"
+	default:
+		return "?"
+	}
+}
 
 // filterMode controls which nodes are shown in the agent tree.
 type filterMode int
@@ -50,11 +70,8 @@ func (f filterMode) label() string {
 	}
 }
 
-// Fixed heights for the header and footer rows (in terminal lines).
-const (
-	headerHeight = 1
-	footerHeight = 1
-)
+// footerHeight is the number of terminal lines reserved for the keybindings bar.
+const footerHeight = 1
 
 // idleDuration is how long after the last PostToolUse event before a session
 // transitions from Running to Idle.
@@ -97,9 +114,11 @@ type Model struct {
 	eventCh         <-chan agent.Event // nil when no hook server is running
 	timerGen        map[string]int     // per-session idle timer generation; incremented to cancel stale timers
 	cursor          int                // index into visibleNodes() for the focused node
+	scrollOffset    int                // index of the first visible row in the agents panel
 	collapsed       map[string]bool    // set of node IDs whose subtrees are currently hidden
 	collapsedGroups map[string]bool    // set of GroupIDs whose members are currently hidden
 	statusFilter    filterMode         // which nodes to show in the agent tree
+	activeRightTab  int                // index into rightTabs for the currently shown right-panel tab
 }
 
 // New creates a Model initialized with session data and a hook event channel.
@@ -121,6 +140,59 @@ func New(nodes []agent.Node, eventCh <-chan agent.Event) Model {
 		collapsed:       make(map[string]bool),
 		collapsedGroups: make(map[string]bool),
 		statusFilter:    filterAll,
+	}
+}
+
+// tabAtX maps an X offset (relative to the start of the tab strip inside the
+// right panel's top border) to a tab index. Returns (index, true) when the
+// click lands on a tab label, (0, false) otherwise.
+// The strip layout mirrors tabStripTitle: active tabs are "[Label]", inactive
+// are "Label", separated by single spaces.
+func (m Model) tabAtX(x int) (int, bool) {
+	offset := 0
+	for i, t := range rightTabs {
+		var label string
+		if i == m.activeRightTab {
+			label = "[" + t.label() + "]"
+		} else {
+			label = t.label()
+		}
+		w := len(label) // all tab labels are ASCII
+		if x >= offset && x < offset+w {
+			return i, true
+		}
+		offset += w + 1 // +1 for the space separator between tabs
+	}
+	return 0, false
+}
+
+// agentsPanelInnerH returns the number of content rows available inside the
+// Agents panel. It accounts for the footer row and the top+bottom panel border.
+func (m Model) agentsPanelInnerH() int {
+	return max(1, m.height-footerHeight-2)
+}
+
+// clampScroll adjusts scrollOffset so the cursor row is always inside the
+// visible viewport. Call this after any operation that may move the cursor or
+// change the list length.
+func (m *Model) clampScroll() {
+	h := m.agentsPanelInnerH()
+	n := len(m.visibleNodes())
+	// Scroll down: cursor moved below the bottom of the viewport.
+	if m.cursor >= m.scrollOffset+h {
+		m.scrollOffset = m.cursor - h + 1
+	}
+	// Scroll up: cursor moved above the top of the viewport.
+	if m.cursor < m.scrollOffset {
+		m.scrollOffset = m.cursor
+	}
+	// Clamp offset so we don't scroll past the end of the list.
+	maxOffset := max(0, n-h)
+	if m.scrollOffset > maxOffset {
+		m.scrollOffset = maxOffset
+	}
+	if m.scrollOffset < 0 {
+		m.scrollOffset = 0
 	}
 }
 
@@ -170,29 +242,27 @@ func (m Model) Init() tea.Cmd {
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 
-	// The terminal was resized. Store the new dimensions so View can use them.
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.clampScroll()
 
-	// A key was pressed.
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "q", "ctrl+c":
-			// tea.Quit is a built-in command that tells Bubbletea to stop the program.
 			return m, tea.Quit
 		case "tab":
-			// Cycle between panels. The `% 2` wraps back to 0 after reaching 1,
-			// so it toggles: 0 → 1 → 0 → 1 ...
 			m.activePanel = (m.activePanel + 1) % 2
 		case "j", "down":
 			n := len(m.visibleNodes())
 			if n > 0 && m.cursor < n-1 {
 				m.cursor++
+				m.clampScroll()
 			}
 		case "k", "up":
 			if m.cursor > 0 {
 				m.cursor--
+				m.clampScroll()
 			}
 		case " ":
 			vn := m.visibleNodes()
@@ -204,14 +274,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.collapsed[entry.id] = !m.collapsed[entry.id]
 				}
 			}
-			// Clamp cursor: collapsing may shrink the visible list below the cursor index.
+			// Clamp cursor and scroll: collapsing may shrink the visible list.
 			if newLen := len(m.visibleNodes()); m.cursor >= newLen {
 				m.cursor = max(0, newLen-1)
 			}
+			m.clampScroll()
+		case "[":
+			n := len(rightTabs)
+			m.activeRightTab = (m.activeRightTab - 1 + n) % n
+		case "]":
+			m.activeRightTab = (m.activeRightTab + 1) % len(rightTabs)
 		case "f":
 			// Cycle filter: All → Running → Errored → All.
 			m.statusFilter = (m.statusFilter + 1) % 3
 			m.cursor = 0
+			m.scrollOffset = 0
 		case "enter":
 			vn := m.visibleNodes()
 			if m.cursor < len(vn) {
@@ -229,18 +306,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-	// A mouse event was received. Handle left-button clicks on the Agents panel:
-	// move the cursor to the clicked row and toggle collapse/expand if the node
-	// has children (or is a parallel-group header).
 	case tea.MouseMsg:
 		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
 			leftW := m.width * 35 / 100
 			if msg.X < leftW {
-				// Content rows begin after: header (1) + top border (1) + title row (1).
-				const contentTop = headerHeight + 1 + 1
-				idx := msg.Y - contentTop
+				// Agents panel: content rows begin after the top border (row 1).
+				// Add scrollOffset to translate screen row → list index.
+				const contentTop = 1
+				idx := msg.Y - contentTop + m.scrollOffset
 				vn := m.visibleNodes()
 				if idx >= 0 && idx < len(vn) {
+					m.activePanel = panelAgents
 					m.cursor = idx
 					// Toggle collapse state, mirroring the space-bar handler.
 					entry := vn[idx]
@@ -249,10 +325,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					} else if node := m.agents.Nodes[entry.id]; node != nil && len(node.Children) > 0 {
 						m.collapsed[entry.id] = !m.collapsed[entry.id]
 					}
-					// Clamp cursor: collapsing may shrink the visible list.
+					// Clamp cursor and scroll: collapsing may shrink the visible list.
 					if newLen := len(m.visibleNodes()); m.cursor >= newLen {
 						m.cursor = max(0, newLen-1)
 					}
+					m.clampScroll()
+				}
+			} else if msg.Y == 0 {
+				// Right panel top border: tabs start 2 columns in (after ╭─).
+				xInStrip := msg.X - leftW - 2
+				if tab, ok := m.tabAtX(xInStrip); ok {
+					m.activePanel = panelEvents
+					m.activeRightTab = tab
 				}
 			}
 		}
@@ -300,29 +384,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Return the (possibly updated) model and no command.
-	// Bubbletea will call View() with this new model to redraw the screen.
 	return m, nil
 }
 
-// View converts the current model state into a string that gets printed to the terminal.
-// Bubbletea calls this after every Update. Think of it as a render function —
-// it should be pure (no side effects) and fast.
+// View renders the current model state. Pure — no side effects.
 func (m Model) View() string {
-	// Don't try to render before we know the terminal size.
-	// Bubbletea sends a WindowSizeMsg almost immediately, so this is brief.
 	if m.width == 0 {
 		return "loading…"
 	}
 
-	// The body gets whatever height is left after the header and footer take their rows.
-	bodyH := m.height - headerHeight - footerHeight
+	bodyH := m.height - footerHeight
 
-	// JoinVertical stacks strings on top of each other with newlines between them.
-	// lipgloss.Left means left-align each piece.
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
-		m.renderHeader(),
 		m.renderBody(bodyH),
 		m.renderFooter(),
 	)

@@ -10,7 +10,6 @@ import (
 )
 
 // Color palette used throughout the TUI.
-// lipgloss.Color accepts any hex color string.
 var (
 	colorAccent = lipgloss.Color("#7C3AED") // violet — used for active panel border and title
 	colorMuted  = lipgloss.Color("#6B7280") // gray — used for inactive elements and descriptions
@@ -20,29 +19,8 @@ var (
 	colorFg     = lipgloss.Color("#F9FAFB") // near-white — primary text
 )
 
-// renderHeader builds the top bar: "orchard" on the left, session status on the right.
-func (m Model) renderHeader() string {
-	left := lipgloss.NewStyle().Bold(true).Foreground(colorAccent).Render(" orchard")
-
-	var statusText string
-	if m.hasSession {
-		statusText = fmt.Sprintf("%d agents", len(m.agents.Nodes))
-	} else {
-		statusText = "waiting for session…"
-	}
-	right := lipgloss.NewStyle().Foreground(colorMuted).Render(statusText + " ")
-
-	// lipgloss.Width measures the visible width of a styled string (ignoring invisible
-	// ANSI escape codes that carry the color information).
-	// We fill the gap between left and right with spaces to push them to opposite edges.
-	gap := max(0, m.width-lipgloss.Width(left)-lipgloss.Width(right))
-	return left + strings.Repeat(" ", gap) + right
-}
-
 // renderFooter builds the bottom keybindings bar.
 func (m Model) renderFooter() string {
-	// `bind` is a local helper function (only exists inside renderFooter).
-	// It formats a single key + description pair: bold key, muted description.
 	bind := func(key, desc string) string {
 		k := lipgloss.NewStyle().Bold(true).Foreground(colorFg).Render(key)
 		d := lipgloss.NewStyle().Foreground(colorMuted).Render(" " + desc + "  ")
@@ -57,6 +35,9 @@ func (m Model) renderFooter() string {
 		content += bind("enter", "mark winner")
 	}
 	content += bind("f", "filter:"+m.statusFilter.label())
+	if len(rightTabs) > 1 {
+		content += bind("[/]", "switch tab")
+	}
 	content += bind("tab", "switch panel") + bind("q", "quit")
 
 	// Pad to full width so the footer bar extends across the whole terminal.
@@ -64,48 +45,107 @@ func (m Model) renderFooter() string {
 	return content + strings.Repeat(" ", gap)
 }
 
-// renderBody builds the two-panel layout that fills the space between header and footer.
+// renderBody builds the two-panel layout.
 func (m Model) renderBody(height int) string {
-	// Give the left (Agents) panel 35% of the width, right (Events) panel gets the rest.
 	leftW := m.width * 35 / 100
 	rightW := m.width - leftW
 
-	// Render each panel, passing whether it's currently active (focused).
-	left := m.renderPanel("Agents", m.agentsContent(), leftW, height, m.activePanel == panelAgents)
-	right := m.renderPanel("Events", m.eventsContent(), rightW, height, m.activePanel == panelEvents)
+	// Title color matches border color (active = accent, inactive = muted).
+	leftActive := m.activePanel == panelAgents
+	leftBorderColor := colorMuted
+	if leftActive {
+		leftBorderColor = colorAccent
+	}
+	agentCount := lipgloss.NewStyle().Foreground(leftBorderColor).Render(fmt.Sprintf(" · %d", len(m.agents.Nodes)))
+	agentsTitle := lipgloss.NewStyle().Bold(true).Foreground(leftBorderColor).Render("Agents") + agentCount
+	left := m.renderPanel(agentsTitle, m.agentsContent(), leftW, height, leftActive)
 
-	// JoinHorizontal places the two panels side by side.
-	// lipgloss.Top means align them to the top edge if they differ in height.
+	rightActive := m.activePanel == panelEvents
+	rightBorderColor := colorMuted
+	if rightActive {
+		rightBorderColor = colorAccent
+	}
+	right := m.renderPanel(m.tabStripTitle(rightBorderColor), m.rightTabContent(), rightW, height, rightActive)
+
 	return lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 }
 
-// renderPanel draws a single bordered panel with a title and content inside.
-// `active` controls whether the border is highlighted (focused) or muted (unfocused).
+// tabStripTitle returns the tab labels formatted for embedding in the top border.
+// The active tab is wrapped in brackets; inactive tabs are muted.
+// borderColor is passed so the active label can match the panel border.
+func (m Model) tabStripTitle(borderColor lipgloss.Color) string {
+	activeStyle := lipgloss.NewStyle().Bold(true).Foreground(borderColor)
+	inactiveStyle := lipgloss.NewStyle().Foreground(colorMuted)
+
+	var parts []string
+	for i, t := range rightTabs {
+		if i == m.activeRightTab {
+			parts = append(parts, activeStyle.Render("["+t.label()+"]"))
+		} else {
+			parts = append(parts, inactiveStyle.Render(t.label()))
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+// rightTabContent returns the body content for the currently active right panel tab.
+func (m Model) rightTabContent() string {
+	if m.activeRightTab < len(rightTabs) {
+		switch rightTabs[m.activeRightTab] {
+		case tabEvents:
+			return m.eventsContent()
+		case tabFiles:
+			return m.filesContent()
+		}
+	}
+	return ""
+}
+
+// filesContent returns placeholder content for the Files panel.
+func (m Model) filesContent() string {
+	return lipgloss.NewStyle().
+		Foreground(colorMuted).
+		Padding(0, 1).
+		Render("Focus an agent to view its file activity.")
+}
+
+// renderPanel draws a bordered panel with the title embedded in the top border:
+//
+//	╭─Title──────────────────────────╮
+//	│ content …                      │
+//	╰────────────────────────────────╯
+//
+// title may carry ANSI codes; lipgloss.Width measures its visible width.
+// Lipgloss renders the full panel first (reliable sizing on resize), then the
+// top border line is replaced with a custom one that embeds the title.
 func (m Model) renderPanel(title, content string, width, height int, active bool) string {
-	// Focused panel gets the accent color, unfocused gets a subtle gray.
 	borderColor := colorMuted
 	if active {
 		borderColor = colorAccent
 	}
 
-	// The border takes 1 character on each side, so the inner content area
-	// is 2 columns narrower and 2 rows shorter than the outer panel dimensions.
+	bs := lipgloss.NewStyle().Foreground(borderColor)
 	innerW := max(1, width-2)
 	innerH := max(1, height-2)
 
-	titleStr := lipgloss.NewStyle().Bold(true).Foreground(colorFg).Padding(0, 1).Render(title)
-
-	// Build the panel style: rounded corners, colored border, fixed inner size.
-	// Setting Width and Height here ensures the panel always fills its allocated space,
-	// even if the content is shorter than the panel — lipgloss pads with empty lines.
-	style := lipgloss.NewStyle().
+	rendered := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(borderColor).
 		Width(innerW).
-		Height(innerH)
+		Height(innerH).
+		Render(content)
 
-	// Stack the title on top of the content, then render them inside the bordered box.
-	return style.Render(lipgloss.JoinVertical(lipgloss.Left, titleStr, content))
+	if title != "" {
+		// ╭─Title──╮: ╭(1) + ─(1) + title + ─…(n) + ╮(1) = width
+		titleW := lipgloss.Width(title)
+		dashCount := max(0, width-3-titleW)
+		customTop := bs.Render("╭─") + title + bs.Render(strings.Repeat("─", dashCount)+"╮")
+		if nl := strings.Index(rendered, "\n"); nl != -1 {
+			rendered = customTop + rendered[nl:]
+		}
+	}
+
+	return rendered
 }
 
 // agentsContent renders the Agents panel body.
@@ -140,7 +180,6 @@ func (m Model) agentsContent() string {
 		return lipgloss.NewStyle().Foreground(c).Render("●")
 	}
 
-	// expandIcon returns the collapse/expand indicator for a node.
 	expandIcon := func(id string, hasChildren bool) string {
 		if !hasChildren {
 			return ""
@@ -151,11 +190,21 @@ func (m Model) agentsContent() string {
 		return "▼ "
 	}
 
-	var lines []string
 	vn := m.visibleNodes()
 
-	for i, entry := range vn {
-		focused := i == m.cursor
+	// Slice to the visible viewport so the panel doesn't overflow.
+	viewH := m.agentsPanelInnerH()
+	start := m.scrollOffset
+	end := min(start+viewH, len(vn))
+	if start > len(vn) {
+		start = len(vn)
+	}
+	visible := vn[start:end]
+
+	var lines []string
+
+	for i, entry := range visible {
+		focused := (start + i) == m.cursor
 
 		// Virtual group header row — collapsible, not backed by a real node.
 		if entry.groupID != "" {
@@ -235,7 +284,6 @@ func (m Model) agentsContent() string {
 }
 
 // eventsContent returns placeholder content for the Events panel.
-// Real per-agent event logs will be shown here in v0.4.
 func (m Model) eventsContent() string {
 	return lipgloss.NewStyle().
 		Foreground(colorMuted).
