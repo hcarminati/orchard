@@ -339,8 +339,9 @@ func TestView_WinnerMarked_ShowsCheckmark(t *testing.T) {
 		{ID: "b", Name: "agent-b", GroupID: "g1", Status: agent.StatusRunning},
 	}
 	m := New(nodes, nil)
-	// cursor starts at 0 (node "a"); press enter to mark it as winner.
+	// cursor=0 is the group header; navigate to "a" (index 1) then mark as winner.
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	view := next.(Model).View()
 	if !strings.Contains(view, "✓") {
@@ -354,8 +355,9 @@ func TestUpdate_EnterMarksWinner_ClearsOtherSiblings(t *testing.T) {
 		{ID: "b", Name: "agent-b", GroupID: "g1", Status: agent.StatusRunning},
 	}
 	m := New(nodes, nil)
-	// cursor=0 → mark "a" as winner.
-	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	// visibleNodes: [header(g1), a(1), b(2)]. Navigate to "a" (index 1) and mark as winner.
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	got := next.(Model)
 
 	if !got.agents.Nodes["a"].Winner {
@@ -365,7 +367,7 @@ func TestUpdate_EnterMarksWinner_ClearsOtherSiblings(t *testing.T) {
 		t.Error("expected node 'b' to not be winner after 'a' is chosen")
 	}
 
-	// Navigate to "b" and mark it as winner — "a" should lose winner status.
+	// Navigate to "b" (index 2) and mark it as winner — "a" should lose winner status.
 	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	got = next.(Model)
@@ -597,22 +599,424 @@ func TestView_HookError_ErroredNodeAtTop(t *testing.T) {
 	}
 }
 
+// --- Collapsible tree tests ---
+
+// makeTree creates a Model with a simple parent-child tree:
+//
+//	A (root, children: B, C)
+//	D (root, no children)
+func makeTree() Model {
+	nodes := []agent.Node{
+		{ID: "A", Name: "agent-A", Status: agent.StatusRunning},
+		{ID: "B", Name: "agent-B", ParentID: "A", Status: agent.StatusRunning},
+		{ID: "C", Name: "agent-C", ParentID: "A", Status: agent.StatusRunning},
+		{ID: "D", Name: "agent-D", Status: agent.StatusRunning},
+	}
+	return New(nodes, nil)
+}
+
+func TestVisibleNodes_FlatTree(t *testing.T) {
+	nodes := []agent.Node{
+		{ID: "x", Name: "x", Status: agent.StatusRunning},
+		{ID: "y", Name: "y", Status: agent.StatusRunning},
+	}
+	m := New(nodes, nil)
+	vn := m.visibleNodes()
+	if len(vn) != 2 {
+		t.Fatalf("expected 2 visible nodes, got %d", len(vn))
+	}
+	if vn[0].id != "x" || vn[0].depth != 0 {
+		t.Errorf("expected vn[0]={x,0}, got %+v", vn[0])
+	}
+	if vn[1].id != "y" || vn[1].depth != 0 {
+		t.Errorf("expected vn[1]={y,0}, got %+v", vn[1])
+	}
+}
+
+func TestVisibleNodes_NestedTree(t *testing.T) {
+	m := makeTree()
+	vn := m.visibleNodes()
+	// Expected DFS order: A(0), B(1), C(1), D(0)
+	if len(vn) != 4 {
+		t.Fatalf("expected 4 visible nodes, got %d: %+v", len(vn), vn)
+	}
+	cases := []visibleNode{
+		{id: "A", depth: 0},
+		{id: "B", depth: 1},
+		{id: "C", depth: 1},
+		{id: "D", depth: 0},
+	}
+	for i, want := range cases {
+		if vn[i] != want {
+			t.Errorf("vn[%d]: got %+v, want %+v", i, vn[i], want)
+		}
+	}
+}
+
+func TestVisibleNodes_CollapsedNodeHidesChildren(t *testing.T) {
+	m := makeTree()
+	m.collapsed["A"] = true
+	vn := m.visibleNodes()
+	// A is collapsed: B and C are hidden. Expected: A(0), D(0)
+	if len(vn) != 2 {
+		t.Fatalf("expected 2 visible nodes after collapsing A, got %d: %+v", len(vn), vn)
+	}
+	if vn[0].id != "A" || vn[1].id != "D" {
+		t.Errorf("expected [A, D], got [%s, %s]", vn[0].id, vn[1].id)
+	}
+}
+
+func TestUpdate_JK_NavigatesNestedTree(t *testing.T) {
+	m := makeTree()
+	// visibleNodes: A(0), B(1), C(2), D(3)
+	if m.cursor != 0 {
+		t.Fatalf("expected initial cursor 0, got %d", m.cursor)
+	}
+
+	var next tea.Model = m
+	// j → B (1)
+	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	if next.(Model).cursor != 1 {
+		t.Errorf("expected cursor 1 after j, got %d", next.(Model).cursor)
+	}
+	// j → C (2)
+	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	if next.(Model).cursor != 2 {
+		t.Errorf("expected cursor 2 after j, got %d", next.(Model).cursor)
+	}
+	// j → D (3)
+	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	if next.(Model).cursor != 3 {
+		t.Errorf("expected cursor 3 after j, got %d", next.(Model).cursor)
+	}
+	// j at bottom: stays at 3
+	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	if next.(Model).cursor != 3 {
+		t.Errorf("expected cursor to stay at 3 at boundary, got %d", next.(Model).cursor)
+	}
+	// k → C (2)
+	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	if next.(Model).cursor != 2 {
+		t.Errorf("expected cursor 2 after k, got %d", next.(Model).cursor)
+	}
+}
+
+func TestUpdate_JK_RespectsCollapsedState(t *testing.T) {
+	m := makeTree()
+	m.collapsed["A"] = true
+	// visibleNodes after collapse: A(0), D(1)
+	var next tea.Model = m
+	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	if next.(Model).cursor != 1 {
+		t.Errorf("expected cursor 1 (D) after j with A collapsed, got %d", next.(Model).cursor)
+	}
+	// j at boundary: stays at 1
+	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	if next.(Model).cursor != 1 {
+		t.Errorf("expected cursor to stay at 1 at boundary, got %d", next.(Model).cursor)
+	}
+}
+
+func TestUpdate_Space_TogglesCollapse(t *testing.T) {
+	m := makeTree()
+	// cursor=0 (A, which has children); press space to collapse.
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" ")})
+	got := next.(Model)
+	if !got.collapsed["A"] {
+		t.Error("expected A to be collapsed after space")
+	}
+	vn := got.visibleNodes()
+	if len(vn) != 2 {
+		t.Errorf("expected 2 visible nodes after collapse, got %d: %+v", len(vn), vn)
+	}
+
+	// Press space again to expand.
+	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" ")})
+	got = next.(Model)
+	if got.collapsed["A"] {
+		t.Error("expected A to be expanded after second space")
+	}
+	vn = got.visibleNodes()
+	if len(vn) != 4 {
+		t.Errorf("expected 4 visible nodes after expand, got %d: %+v", len(vn), vn)
+	}
+}
+
+func TestUpdate_Space_NoEffectOnLeaf(t *testing.T) {
+	m := makeTree()
+	// Navigate to D (index 3, a leaf).
+	var next tea.Model = m
+	for i := 0; i < 3; i++ {
+		next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	}
+	got := next.(Model)
+	if got.cursor != 3 {
+		t.Fatalf("expected cursor 3 (D), got %d", got.cursor)
+	}
+	// Space on a leaf should not change collapsed state.
+	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" ")})
+	final := next.(Model)
+	if len(final.collapsed) != 0 {
+		t.Errorf("expected no collapse state changes for leaf, got collapsed=%v", final.collapsed)
+	}
+	if len(final.visibleNodes()) != 4 {
+		t.Errorf("expected 4 visible nodes (unchanged), got %d", len(final.visibleNodes()))
+	}
+}
+
+func TestUpdate_CursorCorrection_AfterCollapse(t *testing.T) {
+	// Verify cursor is never left pointing at a hidden node after collapse.
+	// Setup: A(root, children: B, C), D(root).
+	// Navigate to D (index 3), navigate back to A (index 0), collapse A.
+	// Cursor should remain on A (valid index 0).
+	m := makeTree()
+	var next tea.Model = m
+	// Navigate to D.
+	for i := 0; i < 3; i++ {
+		next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	}
+	// Navigate back to A.
+	for i := 0; i < 3; i++ {
+		next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	}
+	// Collapse A.
+	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" ")})
+	got := next.(Model)
+
+	vn := got.visibleNodes()
+	if got.cursor >= len(vn) {
+		t.Errorf("cursor %d >= visible len %d — cursor correction failed", got.cursor, len(vn))
+	}
+}
+
+func TestUpdate_CursorCorrection_ClampedWhenOutOfBounds(t *testing.T) {
+	// Directly force cursor out of bounds (as may happen via hook events or future features).
+	// Pressing space should clamp it to a valid index.
+	m := makeTree()
+	m.cursor = 99 // way out of bounds
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" ")})
+	got := next.(Model)
+	vn := got.visibleNodes()
+	if got.cursor >= len(vn) {
+		t.Errorf("cursor %d still out of bounds (visible: %d) after space", got.cursor, len(vn))
+	}
+}
+
+func TestView_TreeRendering_ChildIndented(t *testing.T) {
+	m := makeTree()
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	view := next.(Model).View()
+
+	posA := strings.Index(view, "agent-A")
+	posB := strings.Index(view, "agent-B")
+	posC := strings.Index(view, "agent-C")
+	posD := strings.Index(view, "agent-D")
+
+	for name, pos := range map[string]int{"agent-A": posA, "agent-B": posB, "agent-C": posC, "agent-D": posD} {
+		if pos == -1 {
+			t.Errorf("expected %q in view", name)
+		}
+	}
+	// DFS order: A before B before C before D.
+	if posA >= posB {
+		t.Errorf("expected A before B in view")
+	}
+	if posB >= posC {
+		t.Errorf("expected B before C in view")
+	}
+	if posC >= posD {
+		t.Errorf("expected C before D in view")
+	}
+}
+
+func TestView_CollapseIndicator_ShownForNodesWithChildren(t *testing.T) {
+	m := makeTree()
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	view := next.(Model).View()
+	// A has children and is expanded → should show expand indicator.
+	if !strings.Contains(view, "▼") {
+		t.Errorf("expected expand indicator ▼ for expanded node A, got:\n%s", view)
+	}
+
+	// Collapse A.
+	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" ")})
+	view = next.(Model).View()
+	if !strings.Contains(view, "▶") {
+		t.Errorf("expected collapse indicator ▶ for collapsed node A, got:\n%s", view)
+	}
+}
+
+func TestView_CollapsedNode_HidesChildrenFromView(t *testing.T) {
+	m := makeTree()
+	// Collapse A (cursor=0).
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" ")})
+	view := next.(Model).View()
+
+	if strings.Contains(view, "agent-B") {
+		t.Errorf("expected agent-B to be hidden after collapsing A")
+	}
+	if strings.Contains(view, "agent-C") {
+		t.Errorf("expected agent-C to be hidden after collapsing A")
+	}
+	if !strings.Contains(view, "agent-A") {
+		t.Errorf("expected agent-A (collapsed) to still be visible")
+	}
+	if !strings.Contains(view, "agent-D") {
+		t.Errorf("expected agent-D (sibling root) to still be visible")
+	}
+}
+
+func TestFooter_SpaceHint_OnlyWhenCursorOnNodeWithChildren(t *testing.T) {
+	m := makeTree()
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+
+	// cursor=0 (A, has children) → space hint shown.
+	view := next.(Model).View()
+	if !strings.Contains(view, "expand/collapse") {
+		t.Errorf("expected 'expand/collapse' hint when cursor is on node with children, got:\n%s", view)
+	}
+
+	// Navigate to D (leaf, no children).
+	for i := 0; i < 3; i++ {
+		next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	}
+	view = next.(Model).View()
+	if strings.Contains(view, "expand/collapse") {
+		t.Errorf("expected no 'expand/collapse' hint when cursor is on a leaf, got:\n%s", view)
+	}
+}
+
+func TestFooter_SpaceHint_ShownForGroupHeader(t *testing.T) {
+	nodes := []agent.Node{
+		{ID: "a", Name: "agent-a", GroupID: "g1", Status: agent.StatusRunning},
+		{ID: "b", Name: "agent-b", GroupID: "g1", Status: agent.StatusRunning},
+	}
+	m := New(nodes, nil)
+	// cursor=0 is the group header → space hint shown.
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	view := next.(Model).View()
+	if !strings.Contains(view, "expand/collapse") {
+		t.Errorf("expected 'expand/collapse' hint when cursor is on group header, got:\n%s", view)
+	}
+}
+
+func TestVisibleNodes_GroupHeaderInVisibleNodes(t *testing.T) {
+	nodes := []agent.Node{
+		{ID: "a", Name: "agent-a", GroupID: "g1", Status: agent.StatusRunning},
+		{ID: "b", Name: "agent-b", GroupID: "g1", Status: agent.StatusRunning},
+	}
+	m := New(nodes, nil)
+	vn := m.visibleNodes()
+	// Expected: [header(g1), a, b]
+	if len(vn) != 3 {
+		t.Fatalf("expected 3 visible nodes (1 header + 2 members), got %d: %+v", len(vn), vn)
+	}
+	if vn[0].groupID != "g1" || vn[0].id != "" {
+		t.Errorf("expected vn[0] to be group header for g1, got %+v", vn[0])
+	}
+	if vn[1].id != "a" || vn[2].id != "b" {
+		t.Errorf("expected vn[1]=a, vn[2]=b, got %+v %+v", vn[1], vn[2])
+	}
+}
+
+func TestVisibleNodes_CollapsedGroup_HidesMembers(t *testing.T) {
+	nodes := []agent.Node{
+		{ID: "a", Name: "agent-a", GroupID: "g1", Status: agent.StatusRunning},
+		{ID: "b", Name: "agent-b", GroupID: "g1", Status: agent.StatusRunning},
+		{ID: "c", Name: "solo", Status: agent.StatusRunning},
+	}
+	m := New(nodes, nil)
+	m.collapsedGroups["g1"] = true
+	vn := m.visibleNodes()
+	// Expected: [header(g1), c]
+	if len(vn) != 2 {
+		t.Fatalf("expected 2 visible nodes (header + solo), got %d: %+v", len(vn), vn)
+	}
+	if vn[0].groupID != "g1" {
+		t.Errorf("expected vn[0] to be group header, got %+v", vn[0])
+	}
+	if vn[1].id != "c" {
+		t.Errorf("expected vn[1] to be 'c', got %+v", vn[1])
+	}
+}
+
+func TestUpdate_Space_CollapsesGroup(t *testing.T) {
+	nodes := []agent.Node{
+		{ID: "a", Name: "agent-a", GroupID: "g1", Status: agent.StatusRunning},
+		{ID: "b", Name: "agent-b", GroupID: "g1", Status: agent.StatusRunning},
+	}
+	m := New(nodes, nil)
+	// cursor=0 is the group header; press space to collapse.
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" ")})
+	got := next.(Model)
+	if !got.collapsedGroups["g1"] {
+		t.Error("expected group g1 to be collapsed after space on header")
+	}
+	if len(got.visibleNodes()) != 1 {
+		t.Errorf("expected 1 visible node (header only), got %d", len(got.visibleNodes()))
+	}
+
+	// Press space again to expand.
+	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" ")})
+	got = next.(Model)
+	if got.collapsedGroups["g1"] {
+		t.Error("expected group g1 to be expanded after second space")
+	}
+	if len(got.visibleNodes()) != 3 {
+		t.Errorf("expected 3 visible nodes (header + 2 members), got %d", len(got.visibleNodes()))
+	}
+}
+
+func TestView_CollapsedGroup_HidesMembersFromView(t *testing.T) {
+	nodes := []agent.Node{
+		{ID: "a", Name: "agent-a", GroupID: "g1", Status: agent.StatusRunning},
+		{ID: "b", Name: "agent-b", GroupID: "g1", Status: agent.StatusRunning},
+	}
+	m := New(nodes, nil)
+	// Collapse the group via space on the header (cursor=0).
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" ")})
+	view := next.(Model).View()
+
+	if strings.Contains(view, "agent-a") {
+		t.Errorf("expected agent-a to be hidden after group collapse")
+	}
+	if strings.Contains(view, "agent-b") {
+		t.Errorf("expected agent-b to be hidden after group collapse")
+	}
+	if !strings.Contains(view, "parallel × 2") {
+		t.Errorf("expected group header 'parallel × 2' to remain visible")
+	}
+	if !strings.Contains(view, "▶") {
+		t.Errorf("expected collapsed indicator ▶ on group header")
+	}
+}
+
 func TestFooter_MarkWinnerHint_OnlyWhenCursorInGroup(t *testing.T) {
 	grouped := []agent.Node{
 		{ID: "a", Name: "agent-a", GroupID: "g1", Status: agent.StatusRunning},
 		{ID: "b", Name: "agent-b", GroupID: "g1", Status: agent.StatusRunning},
-		{ID: "c", Name: "solo", Status: agent.StatusRunning}, // ungrouped, index 2
+		{ID: "c", Name: "solo", Status: agent.StatusRunning}, // ungrouped
 	}
 	m := New(grouped, nil)
+	// visibleNodes: [header(g1)(0), a(1), b(2), c(3)]
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 
-	// cursor=0: grouped node → hint should be visible.
+	// cursor=0 is the group header — no "mark winner" hint (not a member).
 	view := next.(Model).View()
+	if strings.Contains(view, "mark winner") {
+		t.Errorf("expected no 'mark winner' hint when cursor is on the group header, got:\n%s", view)
+	}
+
+	// Navigate to "a" (index 1) — grouped member → hint shown.
+	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	view = next.(Model).View()
 	if !strings.Contains(view, "mark winner") {
 		t.Errorf("expected 'mark winner' hint when cursor is on a grouped node, got:\n%s", view)
 	}
 
-	// Navigate to the ungrouped node (index 2).
+	// Navigate to "c" (index 3, ungrouped) — no hint.
 	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	view = next.(Model).View()
