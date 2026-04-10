@@ -9,6 +9,7 @@
 package ui
 
 import (
+	"math"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -141,6 +142,7 @@ func New(nodes []agent.Node, eventCh <-chan agent.Event) Model {
 		collapsed:       make(map[string]bool),
 		collapsedGroups: make(map[string]bool),
 		statusFilter:    filterAll,
+		eventScroll:     math.MaxInt, // will be clamped to real max on first render
 	}
 }
 
@@ -229,6 +231,14 @@ func (m *Model) clampEventScroll() {
 	}
 }
 
+// scrollEventToBottom sets eventScroll to the maximum scroll position for the
+// focused node, so the most-recent events are visible. Safe to call before
+// a window size is known (clampEventScroll will reduce to 0 in that case).
+func (m *Model) scrollEventToBottom() {
+	m.eventScroll = math.MaxInt
+	m.clampEventScroll()
+}
+
 // waitForEvent returns a Cmd that blocks until the next event arrives on ch,
 // then returns it as a hookEventMsg. The TUI re-issues this command after each
 // event so the listener stays alive for the lifetime of the program.
@@ -279,6 +289,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.clampScroll()
+		m.scrollEventToBottom()
 
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -294,7 +305,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				n := len(m.visibleNodes())
 				if n > 0 && m.cursor < n-1 {
 					m.cursor++
-					m.eventScroll = 0
+					m.scrollEventToBottom()
 					m.clampScroll()
 				}
 			}
@@ -305,7 +316,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				if m.cursor > 0 {
 					m.cursor--
-					m.eventScroll = 0
+					m.scrollEventToBottom()
 					m.clampScroll()
 				}
 			}
@@ -379,7 +390,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if idx >= 0 && idx < len(vn) {
 					m.activePanel = panelAgents
 					if idx != m.cursor {
-						m.eventScroll = 0
+						m.scrollEventToBottom()
 					}
 					m.cursor = idx
 					// Toggle collapse state, mirroring the space-bar handler.
@@ -410,6 +421,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		e := msg.event
 		m.agents.ApplyEvent(e)
 		m.hasSession = true
+		if n := m.focusedNode(); n != nil && n.ID == e.SessionID {
+			m.scrollEventToBottom()
+		}
 		cmd := waitForEvent(m.eventCh)
 		switch e.Type {
 		case "PostToolUse":

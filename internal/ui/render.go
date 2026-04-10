@@ -312,7 +312,7 @@ func (m Model) eventsContent() string {
 
 	var lines []string
 	for _, e := range node.Events {
-		ts := tsStyle.Render(e.Timestamp.Format("15:04:05"))
+		ts := tsStyle.Render(e.Timestamp.Format("Jan 02 15:04:05"))
 		line := " " + ts + "  " + e.Type
 		if e.Tool != "" {
 			line += "  " + toolStyle.Render(e.Tool)
@@ -323,10 +323,8 @@ func (m Model) eventsContent() string {
 		lines = append(lines, line)
 	}
 
-	start := m.eventScroll
-	if start > len(lines) {
-		start = len(lines)
-	}
+	maxStart := max(0, len(lines)-viewH)
+	start := min(m.eventScroll, maxStart)
 	end := min(start+viewH, len(lines))
 	return strings.Join(lines[start:end], "\n")
 }
