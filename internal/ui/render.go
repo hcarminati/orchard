@@ -313,7 +313,7 @@ func (m Model) eventsContent() string {
 	toolStyle := lipgloss.NewStyle().Foreground(colorAccent)
 	mutedStyle := lipgloss.NewStyle().Foreground(colorMuted)
 	cursorStyle := lipgloss.NewStyle().Foreground(colorAccent)
-	borderStyle := lipgloss.NewStyle().Foreground(colorMuted)
+	borderStyle := lipgloss.NewStyle().Foreground(colorAccent)
 
 	var allLines []string
 	for idx, e := range node.Events {
