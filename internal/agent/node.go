@@ -139,14 +139,20 @@ func (t *Tree) ApplyEvent(e Event) {
 
 	node.Events = append(node.Events, e)
 
-	// Terminal states (Done, Error) are final — no further transitions allowed.
-	if node.Status.terminal() {
+	// StatusError is the only truly unrecoverable terminal state.
+	// StatusDone can transition back to Running if a new PreToolUse arrives —
+	// this happens when Orchard starts mid-session and loads the session from
+	// JSONL as Done, then receives live events for the still-active session.
+	if node.Status == StatusError {
 		return
 	}
 
 	switch e.Type {
 	case "Stop", "SubagentStop":
-		node.Status = StatusDone
+		// A live Stop means the turn ended and the session is waiting for the next
+		// user message — not that it is permanently over. StatusDone is reserved for
+		// sessions loaded from JSONL at startup (historical runs).
+		node.Status = StatusIdle
 	case "PreToolUse":
 		node.Status = StatusRunning
 	}
