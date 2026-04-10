@@ -77,6 +77,16 @@ type doneTimeoutMsg struct {
 	gen       int
 }
 
+// visibleNode is a single entry in the flattened, depth-first traversal of the
+// visible agent tree. Nodes whose ancestors are collapsed are excluded.
+// When groupID is non-empty the entry is a virtual group header row (no real
+// node behind it); id is empty in that case.
+type visibleNode struct {
+	id      string
+	depth   int
+	groupID string // non-empty only for virtual parallel-group header rows
+}
+
 // Model holds all the state for the Orchard TUI.
 // In Bubbletea, the model is a value type (not a pointer), meaning it gets
 // copied on every update. This keeps state changes predictable and testable.
@@ -88,7 +98,9 @@ type Model struct {
 	hasSession  bool               // whether any session data has been received
 	eventCh     <-chan agent.Event // nil when no hook server is running
 	timerGen    map[string]int     // per-session idle timer generation; incremented to cancel stale timers
-	cursor      int                // index into agents.Roots for the focused node
+	cursor          int             // index into visibleNodes() for the focused node
+	collapsed       map[string]bool // set of node IDs whose subtrees are currently hidden
+	collapsedGroups map[string]bool // set of GroupIDs whose members are currently hidden
 }
 
 // New creates a Model initialized with session data and a hook event channel.
@@ -106,7 +118,9 @@ func New(nodes []agent.Node, eventCh <-chan agent.Event) Model {
 		agents:      tree,
 		hasSession:  len(nodes) > 0,
 		eventCh:     eventCh,
-		timerGen:    make(map[string]int),
+		timerGen:        make(map[string]int),
+		collapsed:       make(map[string]bool),
+		collapsedGroups: make(map[string]bool),
 	}
 }
 
@@ -172,7 +186,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// so it toggles: 0 → 1 → 0 → 1 ...
 			m.activePanel = (m.activePanel + 1) % 2
 		case "j", "down":
-			n := len(m.sortedRoots())
+			n := len(m.visibleNodes())
 			if n > 0 && m.cursor < n-1 {
 				m.cursor++
 			}
@@ -180,10 +194,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.cursor > 0 {
 				m.cursor--
 			}
+		case " ":
+			vn := m.visibleNodes()
+			if m.cursor < len(vn) {
+				entry := vn[m.cursor]
+				if entry.groupID != "" {
+					m.collapsedGroups[entry.groupID] = !m.collapsedGroups[entry.groupID]
+				} else if node := m.agents.Nodes[entry.id]; node != nil && len(node.Children) > 0 {
+					m.collapsed[entry.id] = !m.collapsed[entry.id]
+				}
+			}
+			// Clamp cursor: collapsing may shrink the visible list below the cursor index.
+			if newLen := len(m.visibleNodes()); m.cursor >= newLen {
+				m.cursor = max(0, newLen-1)
+			}
 		case "enter":
-			sr := m.sortedRoots()
-			if m.cursor < len(sr) {
-				id := sr[m.cursor]
+			vn := m.visibleNodes()
+			if m.cursor < len(vn) {
+				id := vn[m.cursor].id
 				if focused, ok := m.agents.Nodes[id]; ok && focused.GroupID != "" {
 					gid := focused.GroupID
 					// Un-mark all siblings in this group, then mark the focused node.
@@ -298,6 +326,9 @@ func (m Model) renderFooter() string {
 	}
 
 	content := " " + bind("j/k", "navigate")
+	if m.cursorHasChildren() {
+		content += bind("space", "expand/collapse")
+	}
 	if m.cursorInGroup() {
 		content += bind("enter", "mark winner")
 	}
@@ -370,111 +401,177 @@ func (m Model) sortedRoots() []string {
 	return out
 }
 
+// visibleNodes returns the flat, pre-order depth-first traversal of the agent
+// tree. Collapsed nodes hide their subtrees; collapsed parallel groups hide
+// their members entirely. Parallel groups are represented by a virtual header
+// row (groupID non-empty, id empty) that the cursor can land on.
+func (m Model) visibleNodes() []visibleNode {
+	var result []visibleNode
+	seenGroups := map[string]bool{}
+
+	var walk func(id string, depth int)
+	walk = func(id string, depth int) {
+		node := m.agents.Nodes[id]
+		if node == nil {
+			return
+		}
+
+		// Root-level grouped nodes share a virtual header row.
+		if node.GroupID != "" && depth == 0 {
+			if !seenGroups[node.GroupID] {
+				seenGroups[node.GroupID] = true
+				result = append(result, visibleNode{groupID: node.GroupID})
+			}
+			if m.collapsedGroups[node.GroupID] {
+				return // hide all members when group is collapsed
+			}
+		}
+
+		result = append(result, visibleNode{id: id, depth: depth})
+		if !m.collapsed[id] {
+			for _, childID := range node.Children {
+				walk(childID, depth+1)
+			}
+		}
+	}
+	for _, id := range m.sortedRoots() {
+		walk(id, 0)
+	}
+	return result
+}
+
 // cursorInGroup reports whether the currently focused node belongs to a parallel group.
 func (m Model) cursorInGroup() bool {
-	sr := m.sortedRoots()
-	if m.cursor >= len(sr) {
+	vn := m.visibleNodes()
+	if m.cursor >= len(vn) {
 		return false
 	}
-	n := m.agents.Nodes[sr[m.cursor]]
+	n := m.agents.Nodes[vn[m.cursor].id]
 	return n != nil && n.GroupID != ""
 }
 
+// cursorHasChildren reports whether the currently focused node (or group header)
+// can be collapsed/expanded with space.
+func (m Model) cursorHasChildren() bool {
+	vn := m.visibleNodes()
+	if m.cursor >= len(vn) {
+		return false
+	}
+	entry := vn[m.cursor]
+	if entry.groupID != "" {
+		return true // group headers are always collapsible
+	}
+	n := m.agents.Nodes[entry.id]
+	return n != nil && len(n.Children) > 0
+}
+
 // agentsContent renders the Agents panel body.
-// When no session is active it shows a "waiting" prompt; otherwise it lists
-// root agent nodes with a colored status dot. Sibling nodes sharing a GroupID
-// are visually grouped under a "parallel × N" header. The focused node (cursor)
-// is highlighted with ">"; when a winner is marked in a group the others are
-// dimmed as dismissed.
+// When no session is active it shows a "waiting" prompt; otherwise it renders
+// the agent tree with depth-based indentation. Nodes with children show a
+// collapse/expand indicator (▶/▼). Sibling nodes sharing a GroupID are grouped
+// under a "parallel × N" header at root level. The focused node is highlighted
+// with ">"; when a winner is marked in a group the others are dimmed.
 func (m Model) agentsContent() string {
+	waiting := lipgloss.NewStyle().Foreground(colorMuted).Padding(0, 1).Render("Waiting for session…")
 	if !m.hasSession || len(m.agents.Nodes) == 0 {
-		return lipgloss.NewStyle().
-			Foreground(colorMuted).
-			Padding(0, 1).
-			Render("Waiting for session…")
+		return waiting
 	}
 
 	dot := func(c lipgloss.Color) string {
 		return lipgloss.NewStyle().Foreground(c).Render("●")
 	}
 
-	var lines []string
-	seen := map[string]bool{} // groupIDs whose headers have been emitted
-	sr := m.sortedRoots()
+	// expandIcon returns the collapse/expand indicator for a node.
+	expandIcon := func(id string, hasChildren bool) string {
+		if !hasChildren {
+			return ""
+		}
+		if m.collapsed[id] {
+			return "▶ "
+		}
+		return "▼ "
+	}
 
-	for i, id := range sr {
-		n := m.agents.Nodes[id]
+	var lines []string
+	vn := m.visibleNodes()
+
+	for i, entry := range vn {
+		focused := i == m.cursor
+
+		// Virtual group header row — collapsible, not backed by a real node.
+		if entry.groupID != "" {
+			count := 0
+			for _, id := range m.agents.Roots {
+				if n := m.agents.Nodes[id]; n != nil && n.GroupID == entry.groupID {
+					count++
+				}
+			}
+			collapsed := m.collapsedGroups[entry.groupID]
+			icon := "▼ "
+			if collapsed {
+				icon = "▶ "
+			}
+			prefix := "  "
+			if focused {
+				prefix = "> "
+			}
+			lines = append(lines, prefix+icon+lipgloss.NewStyle().Foreground(colorMuted).Render(
+				fmt.Sprintf("parallel × %d", count),
+			))
+			continue
+		}
+
+		n := m.agents.Nodes[entry.id]
 		if n == nil {
 			continue
 		}
 
-		if n.GroupID == "" {
-			// Ungrouped node: render with cursor indicator.
-			prefix := "  "
-			if i == m.cursor {
-				prefix = "> "
-			}
-			line := prefix + dot(statusColor(n.Status)) + " " + n.Name
-			if n.Status == agent.StatusError && n.ErrorMsg != "" {
-				line += " " + lipgloss.NewStyle().Foreground(colorRed).Render("✗ "+n.ErrorMsg)
-			}
-			lines = append(lines, line)
-			continue
-		}
+		indent := strings.Repeat("  ", entry.depth)
+		icon := expandIcon(entry.id, len(n.Children) > 0)
 
-		// Grouped: skip nodes whose group header has already been emitted.
-		if seen[n.GroupID] {
-			continue
-		}
-		seen[n.GroupID] = true
-
-		// Collect all group members (in sorted order) and check for a winner.
-		var memberIdxs []int
-		hasWinner := false
-		for j, rid := range sr {
-			rn := m.agents.Nodes[rid]
-			if rn != nil && rn.GroupID == n.GroupID {
-				memberIdxs = append(memberIdxs, j)
-				if rn.Winner {
+		// Group members get an extra visual indent level under the header.
+		if n.GroupID != "" && entry.depth == 0 {
+			hasWinner := false
+			for _, id := range m.agents.Roots {
+				if on := m.agents.Nodes[id]; on != nil && on.GroupID == n.GroupID && on.Winner {
 					hasWinner = true
+					break
 				}
 			}
-		}
-
-		// Emit the group header.
-		lines = append(lines, lipgloss.NewStyle().Foreground(colorMuted).Render(
-			fmt.Sprintf("  parallel × %d", len(memberIdxs)),
-		))
-
-		// Emit each group member indented under the header.
-		for _, mi := range memberIdxs {
-			mn := m.agents.Nodes[sr[mi]]
-			if mn == nil {
-				continue
-			}
 			prefix := "    "
-			if mi == m.cursor {
+			if focused {
 				prefix = "  > "
 			}
 			indicator := ""
-			if mn.Winner {
+			if n.Winner {
 				indicator = " ✓"
 			}
-			line := prefix + dot(statusColor(mn.Status)) + " " + mn.Name + indicator
-			if mn.Status == agent.StatusError && mn.ErrorMsg != "" {
-				line += " " + lipgloss.NewStyle().Foreground(colorRed).Render("✗ "+mn.ErrorMsg)
+			line := prefix + icon + dot(statusColor(n.Status)) + " " + n.Name + indicator
+			if n.Status == agent.StatusError && n.ErrorMsg != "" {
+				line += " " + lipgloss.NewStyle().Foreground(colorRed).Render("✗ "+n.ErrorMsg)
 			}
-			if hasWinner && !mn.Winner {
+			if hasWinner && !n.Winner {
 				line = lipgloss.NewStyle().Foreground(colorMuted).Render(line)
 			}
 			lines = append(lines, line)
+			continue
 		}
+
+		// Ungrouped root node or any child node.
+		prefix := indent + "  "
+		if focused {
+			prefix = indent + "> "
+		}
+		line := prefix + icon + dot(statusColor(n.Status)) + " " + n.Name
+		if n.Status == agent.StatusError && n.ErrorMsg != "" {
+			line += " " + lipgloss.NewStyle().Foreground(colorRed).Render("✗ "+n.ErrorMsg)
+		}
+		lines = append(lines, line)
 	}
 
 	if len(lines) == 0 {
-		return lipgloss.NewStyle().Foreground(colorMuted).Padding(0, 1).Render("Waiting for session…")
+		return waiting
 	}
-
 	return strings.Join(lines, "\n")
 }
 
