@@ -88,6 +88,7 @@ type Model struct {
 	hasSession  bool               // whether any session data has been received
 	eventCh     <-chan agent.Event // nil when no hook server is running
 	timerGen    map[string]int     // per-session idle timer generation; incremented to cancel stale timers
+	cursor      int                // index into agents.Roots for the focused node
 }
 
 // New creates a Model initialized with session data and a hook event channel.
@@ -170,6 +171,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Cycle between panels. The `% 2` wraps back to 0 after reaching 1,
 			// so it toggles: 0 → 1 → 0 → 1 ...
 			m.activePanel = (m.activePanel + 1) % 2
+		case "j", "down":
+			n := len(m.agents.Roots)
+			if n > 0 && m.cursor < n-1 {
+				m.cursor++
+			}
+		case "k", "up":
+			if m.cursor > 0 {
+				m.cursor--
+			}
+		case "enter":
+			if m.cursor < len(m.agents.Roots) {
+				id := m.agents.Roots[m.cursor]
+				if focused, ok := m.agents.Nodes[id]; ok && focused.GroupID != "" {
+					gid := focused.GroupID
+					// Un-mark all siblings in this group, then mark the focused node.
+					for _, rid := range m.agents.Roots {
+						if rn, ok := m.agents.Nodes[rid]; ok && rn.GroupID == gid {
+							rn.Winner = false
+						}
+					}
+					focused.Winner = true
+				}
+			}
 		}
 
 	// A hook event arrived from the HTTP server.
@@ -272,7 +296,11 @@ func (m Model) renderFooter() string {
 		return k + d
 	}
 
-	content := " " + bind("tab", "switch panel") + bind("q", "quit")
+	content := " " + bind("j/k", "navigate")
+	if m.cursorInGroup() {
+		content += bind("enter", "mark winner")
+	}
+	content += bind("tab", "switch panel") + bind("q", "quit")
 
 	// Pad to full width so the footer bar extends across the whole terminal.
 	gap := max(0, m.width-lipgloss.Width(content))
@@ -323,9 +351,21 @@ func (m Model) renderPanel(title, content string, width, height int, active bool
 	return style.Render(lipgloss.JoinVertical(lipgloss.Left, titleStr, content))
 }
 
+// cursorInGroup reports whether the currently focused node belongs to a parallel group.
+func (m Model) cursorInGroup() bool {
+	if m.cursor >= len(m.agents.Roots) {
+		return false
+	}
+	n := m.agents.Nodes[m.agents.Roots[m.cursor]]
+	return n != nil && n.GroupID != ""
+}
+
 // agentsContent renders the Agents panel body.
 // When no session is active it shows a "waiting" prompt; otherwise it lists
-// each root agent node with a colored status dot.
+// root agent nodes with a colored status dot. Sibling nodes sharing a GroupID
+// are visually grouped under a "parallel × N" header. The focused node (cursor)
+// is highlighted with ">"; when a winner is marked in a group the others are
+// dimmed as dismissed.
 func (m Model) agentsContent() string {
 	if !m.hasSession || len(m.agents.Nodes) == 0 {
 		return lipgloss.NewStyle().
@@ -339,12 +379,68 @@ func (m Model) agentsContent() string {
 	}
 
 	var lines []string
-	for _, id := range m.agents.Roots {
+	seen := map[string]bool{} // groupIDs whose headers have been emitted
+
+	for i, id := range m.agents.Roots {
 		n := m.agents.Nodes[id]
 		if n == nil {
 			continue
 		}
-		lines = append(lines, "  "+dot(statusColor(n.Status))+" "+n.Name)
+
+		if n.GroupID == "" {
+			// Ungrouped node: render with cursor indicator.
+			prefix := "  "
+			if i == m.cursor {
+				prefix = "> "
+			}
+			lines = append(lines, prefix+dot(statusColor(n.Status))+" "+n.Name)
+			continue
+		}
+
+		// Grouped: skip nodes whose group header has already been emitted.
+		if seen[n.GroupID] {
+			continue
+		}
+		seen[n.GroupID] = true
+
+		// Collect all group members (in Roots order) and check for a winner.
+		var memberIdxs []int
+		hasWinner := false
+		for j, rid := range m.agents.Roots {
+			rn := m.agents.Nodes[rid]
+			if rn != nil && rn.GroupID == n.GroupID {
+				memberIdxs = append(memberIdxs, j)
+				if rn.Winner {
+					hasWinner = true
+				}
+			}
+		}
+
+		// Emit the group header.
+		lines = append(lines, lipgloss.NewStyle().Foreground(colorMuted).Render(
+			fmt.Sprintf("  parallel × %d", len(memberIdxs)),
+		))
+
+		// Emit each group member indented under the header.
+		for _, mi := range memberIdxs {
+			mn := m.agents.Nodes[m.agents.Roots[mi]]
+			if mn == nil {
+				continue
+			}
+			prefix := "    "
+			if mi == m.cursor {
+				prefix = "  > "
+			}
+			indicator := ""
+			if mn.Winner {
+				indicator = " ✓"
+			}
+			line := prefix + dot(statusColor(mn.Status)) + " " + mn.Name + indicator
+			if hasWinner && !mn.Winner {
+				line = lipgloss.NewStyle().Foreground(colorMuted).Render(line)
+			}
+			lines = append(lines, line)
+		}
 	}
 
 	if len(lines) == 0 {

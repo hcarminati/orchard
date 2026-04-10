@@ -302,3 +302,178 @@ func TestIdleTimeout_StaleGenIgnored(t *testing.T) {
 		t.Errorf("expected StatusRunning (stale timer ignored), got %d", node.Status)
 	}
 }
+
+// --- Parallel run grouping tests ---
+
+func TestView_GroupLabel_ShowsCorrectCount(t *testing.T) {
+	nodes := []agent.Node{
+		{ID: "a", Name: "agent-a", GroupID: "g1", Status: agent.StatusRunning},
+		{ID: "b", Name: "agent-b", GroupID: "g1", Status: agent.StatusRunning},
+		{ID: "c", Name: "agent-c", GroupID: "g1", Status: agent.StatusRunning},
+	}
+	m := New(nodes, nil)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	view := next.(Model).View()
+	if !strings.Contains(view, "parallel × 3") {
+		t.Errorf("expected 'parallel × 3' in view, got:\n%s", view)
+	}
+}
+
+func TestView_GroupLabel_TwoMembers(t *testing.T) {
+	nodes := []agent.Node{
+		{ID: "a", Name: "agent-a", GroupID: "g1", Status: agent.StatusRunning},
+		{ID: "b", Name: "agent-b", GroupID: "g1", Status: agent.StatusIdle},
+	}
+	m := New(nodes, nil)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	view := next.(Model).View()
+	if !strings.Contains(view, "parallel × 2") {
+		t.Errorf("expected 'parallel × 2' in view, got:\n%s", view)
+	}
+}
+
+func TestView_WinnerMarked_ShowsCheckmark(t *testing.T) {
+	nodes := []agent.Node{
+		{ID: "a", Name: "agent-a", GroupID: "g1", Status: agent.StatusRunning},
+		{ID: "b", Name: "agent-b", GroupID: "g1", Status: agent.StatusRunning},
+	}
+	m := New(nodes, nil)
+	// cursor starts at 0 (node "a"); press enter to mark it as winner.
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	view := next.(Model).View()
+	if !strings.Contains(view, "✓") {
+		t.Errorf("expected winner indicator ✓ in view, got:\n%s", view)
+	}
+}
+
+func TestUpdate_EnterMarksWinner_ClearsOtherSiblings(t *testing.T) {
+	nodes := []agent.Node{
+		{ID: "a", Name: "agent-a", GroupID: "g1", Status: agent.StatusRunning},
+		{ID: "b", Name: "agent-b", GroupID: "g1", Status: agent.StatusRunning},
+	}
+	m := New(nodes, nil)
+	// cursor=0 → mark "a" as winner.
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := next.(Model)
+
+	if !got.agents.Nodes["a"].Winner {
+		t.Error("expected node 'a' to be marked as winner")
+	}
+	if got.agents.Nodes["b"].Winner {
+		t.Error("expected node 'b' to not be winner after 'a' is chosen")
+	}
+
+	// Navigate to "b" and mark it as winner — "a" should lose winner status.
+	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got = next.(Model)
+
+	if got.agents.Nodes["a"].Winner {
+		t.Error("expected node 'a' to lose winner status after 'b' is chosen")
+	}
+	if !got.agents.Nodes["b"].Winner {
+		t.Error("expected node 'b' to be winner")
+	}
+}
+
+func TestView_UngroupedNodesUnaffected(t *testing.T) {
+	nodes := []agent.Node{
+		{ID: "x", Name: "solo-agent", Status: agent.StatusRunning},
+	}
+	m := New(nodes, nil)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	view := next.(Model).View()
+
+	if strings.Contains(view, "parallel") {
+		t.Errorf("expected no 'parallel' label for ungrouped node, got:\n%s", view)
+	}
+	if !strings.Contains(view, "solo-agent") {
+		t.Errorf("expected node name 'solo-agent' in view, got:\n%s", view)
+	}
+}
+
+func TestUpdate_JKNavigation(t *testing.T) {
+	nodes := []agent.Node{
+		{ID: "a", Name: "agent-a", Status: agent.StatusRunning},
+		{ID: "b", Name: "agent-b", Status: agent.StatusRunning},
+		{ID: "c", Name: "agent-c", Status: agent.StatusRunning},
+	}
+	m := New(nodes, nil)
+	if m.cursor != 0 {
+		t.Errorf("expected initial cursor 0, got %d", m.cursor)
+	}
+
+	// j moves cursor down.
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	if next.(Model).cursor != 1 {
+		t.Errorf("expected cursor 1 after j, got %d", next.(Model).cursor)
+	}
+
+	// j again.
+	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	if next.(Model).cursor != 2 {
+		t.Errorf("expected cursor 2 after second j, got %d", next.(Model).cursor)
+	}
+
+	// j at last item: cursor should not exceed bounds.
+	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	if next.(Model).cursor != 2 {
+		t.Errorf("expected cursor to stay at 2 at boundary, got %d", next.(Model).cursor)
+	}
+
+	// k moves cursor up.
+	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	if next.(Model).cursor != 1 {
+		t.Errorf("expected cursor 1 after k, got %d", next.(Model).cursor)
+	}
+}
+
+func TestUpdate_KAtTopBoundary(t *testing.T) {
+	nodes := []agent.Node{
+		{ID: "a", Name: "agent-a", Status: agent.StatusRunning},
+	}
+	m := New(nodes, nil)
+	// k at top should not go below 0.
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	if next.(Model).cursor != 0 {
+		t.Errorf("expected cursor to stay at 0 at top boundary, got %d", next.(Model).cursor)
+	}
+}
+
+func TestUpdate_EnterOnUngroupedNode_NoEffect(t *testing.T) {
+	nodes := []agent.Node{
+		{ID: "x", Name: "solo", Status: agent.StatusRunning},
+	}
+	m := New(nodes, nil)
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := next.(Model)
+	// No GroupID means no winner should be set.
+	if got.agents.Nodes["x"].Winner {
+		t.Error("expected Winner to remain false for ungrouped node")
+	}
+}
+
+func TestFooter_MarkWinnerHint_OnlyWhenCursorInGroup(t *testing.T) {
+	grouped := []agent.Node{
+		{ID: "a", Name: "agent-a", GroupID: "g1", Status: agent.StatusRunning},
+		{ID: "b", Name: "agent-b", GroupID: "g1", Status: agent.StatusRunning},
+		{ID: "c", Name: "solo", Status: agent.StatusRunning}, // ungrouped, index 2
+	}
+	m := New(grouped, nil)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+
+	// cursor=0: grouped node → hint should be visible.
+	view := next.(Model).View()
+	if !strings.Contains(view, "mark winner") {
+		t.Errorf("expected 'mark winner' hint when cursor is on a grouped node, got:\n%s", view)
+	}
+
+	// Navigate to the ungrouped node (index 2).
+	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	view = next.(Model).View()
+	if strings.Contains(view, "mark winner") {
+		t.Errorf("expected no 'mark winner' hint when cursor is on an ungrouped node, got:\n%s", view)
+	}
+}
