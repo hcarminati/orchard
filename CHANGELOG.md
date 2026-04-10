@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-04-10
+
+### Added
+- Session status lifecycle: Running → Idle (3 s after last tool call) → Done (10 min idle); status dots reflect live state
+- Status dot colors: green (running), yellow (idle), grey (done), red (error); error message surfaced inline
+- Parallel run grouping: agents sharing a `GroupID` appear under a collapsible `parallel × N` header; `enter` marks a winner
+- Collapsible agent tree: `space` or mouse click expands/collapses nodes and group headers; `▶`/`▼` indicators
+- Status filter toggle: `f` cycles All → Running → Errored → All; footer shows current mode
+- Mouse click support: left-click in the Agents panel moves cursor and toggles collapse/expand
+- Line truncation with ellipsis (`…`) prevents long names from wrapping and breaking click coordinates
+- `--demo` flag: populates the tree with fake agents for local testing without a live Claude Code session
+
 ## [0.2.0] - 2026-04-10
 
 ### Added
