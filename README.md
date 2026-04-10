@@ -42,7 +42,9 @@ go install github.com/hcarminati/orchard/cmd/orchard@latest
 Run Orchard in one pane and Claude Code in the other:
 
 ```sh
-orchard
+orchard                   # start on default port 7070
+orchard --port 8080       # use a custom hook server port
+orchard --version         # print version and exit
 ```
 
 ## Keybindings
