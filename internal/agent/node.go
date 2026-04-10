@@ -27,6 +27,12 @@ type Event struct {
 	SessionID string
 	// Tool is the tool name involved, if any (present for PreToolUse / PostToolUse).
 	Tool string
+	// Input is the raw JSON tool input (present for PreToolUse / PostToolUse).
+	Input string
+	// Response is the raw tool response (present for PostToolUse).
+	Response string
+	// Message is the notification text (present for Notification events).
+	Message string
 	// Timestamp is when Orchard received the event.
 	Timestamp time.Time
 }

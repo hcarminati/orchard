@@ -3,9 +3,12 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
+	"time"
 
 	// Bubbletea is the TUI framework. We alias it as `tea` — that's the convention
 	// across all Bubbletea projects so you'll see `tea.Cmd`, `tea.Msg` etc.
@@ -56,15 +59,20 @@ func main() {
 	eventCh := make(chan agent.Event, 256)
 
 	// Start the hook server in the background. It blocks on ListenAndServe,
-	// so it must run in its own goroutine. We ignore its error on exit because
-	// the server stopping when the process exits is expected.
+	// so it must run in its own goroutine. http.ErrServerClosed is expected
+	// on clean shutdown and is not logged.
 	hookServer := hooks.NewServer(cwd, eventCh, ":"+*port)
 	go func() {
-		if err := hookServer.Start(); err != nil {
+		if err := hookServer.Start(); err != nil && err != http.ErrServerClosed {
 			// Log to stderr but do not crash the TUI — the user can still use
 			// Orchard in read-only mode (session JSONL only) if the port is taken.
 			fmt.Fprintf(os.Stderr, "hook server: %v\n", err)
 		}
+	}()
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = hookServer.Shutdown(ctx)
 	}()
 
 	// Create a new Bubbletea program, passing it our UI model and options.
