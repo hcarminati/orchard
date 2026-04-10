@@ -1,7 +1,10 @@
 package ui
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
+	"sort"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -285,7 +288,8 @@ func (m Model) agentsContent() string {
 
 // eventsContent renders the event log for the currently focused agent node.
 // Each entry shows a timestamp, event type, and tool name where applicable.
-// The list is scrollable via j/k when the right panel has focus.
+// Tool call events (PreToolUse / PostToolUse) can be expanded with enter to
+// reveal their full input JSON and output. The list is scrollable via j/k.
 func (m Model) eventsContent() string {
 	muted := lipgloss.NewStyle().Foreground(colorMuted).Padding(0, 1)
 
@@ -302,31 +306,204 @@ func (m Model) eventsContent() string {
 		return muted.Render("No events yet.")
 	}
 
-	leftW := m.width * 35 / 100
-	rightW := m.width - leftW
-	innerW := max(1, rightW-2)
+	innerW := m.innerWidth()
 	viewH := max(1, m.height-footerHeight-2)
 
 	tsStyle := lipgloss.NewStyle().Foreground(colorMuted)
 	toolStyle := lipgloss.NewStyle().Foreground(colorAccent)
+	mutedStyle := lipgloss.NewStyle().Foreground(colorMuted)
+	cursorStyle := lipgloss.NewStyle().Foreground(colorAccent)
+	borderStyle := lipgloss.NewStyle().Foreground(colorMuted)
 
-	var lines []string
-	for _, e := range node.Events {
+	var allLines []string
+	for idx, e := range node.Events {
+		isSelected := idx == m.eventCursor
+		key := eventKey(node.ID, idx)
+		expanded := isToolEvent(e) && m.expandedEvents[key]
+
+		prefix := "  "
+		if isSelected {
+			prefix = cursorStyle.Render("> ")
+		}
+
 		ts := tsStyle.Render(e.Timestamp.Format("Jan 02 15:04:05"))
-		line := " " + ts + "  " + e.Type
+		header := prefix + ts + "  " + e.Type
 		if e.Tool != "" {
-			line += "  " + toolStyle.Render(e.Tool)
+			header += "  " + toolStyle.Render(e.Tool)
 		}
-		if lipgloss.Width(line) > innerW {
-			line = lipgloss.NewStyle().MaxWidth(innerW - 1).Render(line) + "…"
+
+		if isToolEvent(e) {
+			if expanded {
+				header += "  " + mutedStyle.Render("▼")
+			} else {
+				header += "  " + mutedStyle.Render("▶")
+			}
 		}
-		lines = append(lines, line)
+
+		if !expanded {
+			// Collapsed: short input preview (≤20 chars) appended to the header.
+			if isToolEvent(e) && e.Input != "" {
+				preview := "  " + inputPreview(e.Input)
+				full := header + preview
+				if lipgloss.Width(full) > innerW {
+					full = lipgloss.NewStyle().MaxWidth(innerW-1).Render(full) + "…"
+				}
+				allLines = append(allLines, full)
+			} else {
+				if lipgloss.Width(header) > innerW {
+					header = lipgloss.NewStyle().MaxWidth(innerW-1).Render(header) + "…"
+				}
+				allLines = append(allLines, header)
+			}
+		} else {
+			// Expanded: header, then bordered KV block for input, then output.
+			allLines = append(allLines, header)
+			bar := borderStyle.Render("│")
+			home, _ := os.UserHomeDir()
+			if e.Input != "" {
+				allLines = append(allLines, bar+"  "+mutedStyle.Render("Input:"))
+				for _, l := range formatKV(e.Input, home) {
+					line := bar + "    " + l
+					if lipgloss.Width(line) > innerW {
+						line = lipgloss.NewStyle().MaxWidth(innerW-1).Render(line) + "…"
+					}
+					allLines = append(allLines, line)
+				}
+			}
+			if e.Response != "" {
+				allLines = append(allLines, bar+"  "+mutedStyle.Render("Output:"))
+				for _, l := range formatKV(e.Response, home) {
+					line := bar + "    " + l
+					if lipgloss.Width(line) > innerW {
+						line = lipgloss.NewStyle().MaxWidth(innerW-1).Render(line) + "…"
+					}
+					allLines = append(allLines, line)
+				}
+			}
+			allLines = append(allLines, bar)
+		}
 	}
 
-	maxStart := max(0, len(lines)-viewH)
+	maxStart := max(0, len(allLines)-viewH)
 	start := min(m.eventScroll, maxStart)
-	end := min(start+viewH, len(lines))
-	return strings.Join(lines[start:end], "\n")
+	end := min(start+viewH, len(allLines))
+	return strings.Join(allLines[start:end], "\n")
+}
+
+// inputPreview returns a short (≤20 rune) summary of a JSON tool input for
+// the collapsed event row. It extracts the most informative string value.
+func inputPreview(input string) string {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(input), &obj); err != nil {
+		return truncRunes(strings.ReplaceAll(input, "\n", " "), 20)
+	}
+	// Prefer high-signal keys that tend to carry the most context.
+	for _, k := range []string{"command", "cmd", "file_path", "path", "pattern", "query", "prompt"} {
+		raw, ok := obj[k]
+		if !ok {
+			continue
+		}
+		var s string
+		if err := json.Unmarshal(raw, &s); err == nil {
+			return truncRunes(strings.ReplaceAll(s, "\n", " "), 20)
+		}
+	}
+	// Fall back to first string value in sorted key order.
+	keys := make([]string, 0, len(obj))
+	for k := range obj {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		var s string
+		if err := json.Unmarshal(obj[k], &s); err == nil {
+			return truncRunes(strings.ReplaceAll(s, "\n", " "), 20)
+		}
+	}
+	return fmt.Sprintf("{%d fields}", len(obj))
+}
+
+// formatKV formats a JSON string as indented "key: value" lines.
+// String values are truncated at 60 runes and home-dir prefixes replaced with ~.
+// Falls back to plain line-split display for non-object JSON and plain text.
+func formatKV(s, home string) []string {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(s), &obj); err != nil {
+		// Plain text or non-object JSON — split on newlines and return as-is.
+		return strings.Split(s, "\n")
+	}
+	keys := make([]string, 0, len(obj))
+	for k := range obj {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	lines := make([]string, 0, len(keys))
+	for _, k := range keys {
+		lines = append(lines, k+": "+kvValue(obj[k], home))
+	}
+	return lines
+}
+
+// kvValue formats a single raw JSON value for KV display.
+func kvValue(raw json.RawMessage, home string) string {
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		if home != "" && strings.HasPrefix(s, home) {
+			s = "~" + s[len(home):]
+		}
+		return truncRunes(strings.ReplaceAll(s, "\n", "↵"), 60)
+	}
+	str := strings.TrimSpace(string(raw))
+	if str == "true" || str == "false" || str == "null" {
+		return str
+	}
+	if len(str) > 0 && (str[0] == '-' || (str[0] >= '0' && str[0] <= '9')) {
+		return str // number
+	}
+	if len(str) > 0 && str[0] == '[' {
+		var arr []json.RawMessage
+		if err := json.Unmarshal(raw, &arr); err == nil {
+			return fmt.Sprintf("[%d items]", len(arr))
+		}
+	}
+	return "{…}" // nested object
+}
+
+// truncRunes truncates s to at most n runes, appending … if trimmed.
+func truncRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
+}
+
+// wrapString splits s into lines of at most width runes, splitting first on
+// existing newlines then on the width boundary.
+func wrapString(s string, width int) []string {
+	if width <= 0 || s == "" {
+		return []string{s}
+	}
+	var result []string
+	for _, physical := range strings.Split(s, "\n") {
+		runes := []rune(physical)
+		if len(runes) == 0 {
+			result = append(result, "")
+			continue
+		}
+		for len(runes) > 0 {
+			n := width
+			if n > len(runes) {
+				n = len(runes)
+			}
+			result = append(result, string(runes[:n]))
+			runes = runes[n:]
+		}
+	}
+	if len(result) == 0 {
+		return []string{""}
+	}
+	return result
 }
 
 // statusColor maps an agent status to its indicator color.

@@ -10,6 +10,8 @@ package ui
 
 import (
 	"math"
+	"strconv"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -117,6 +119,8 @@ type Model struct {
 	cursor          int                // index into visibleNodes() for the focused node
 	scrollOffset    int                // index of the first visible row in the agents panel
 	eventScroll     int                // index of the first visible row in the events panel
+	eventCursor     int                // index into the focused node's Events slice (selected row)
+	expandedEvents  map[string]bool    // set of "nodeID:eventIdx" keys for expanded tool events
 	collapsed       map[string]bool    // set of node IDs whose subtrees are currently hidden
 	collapsedGroups map[string]bool    // set of GroupIDs whose members are currently hidden
 	statusFilter    filterMode         // which nodes to show in the agent tree
@@ -141,6 +145,7 @@ func New(nodes []agent.Node, eventCh <-chan agent.Event) Model {
 		timerGen:        make(map[string]int),
 		collapsed:       make(map[string]bool),
 		collapsedGroups: make(map[string]bool),
+		expandedEvents:  make(map[string]bool),
 		statusFilter:    filterAll,
 		eventScroll:     math.MaxInt, // will be clamped to real max on first render
 	}
@@ -213,6 +218,63 @@ func (m Model) focusedNode() *agent.Node {
 	return m.agents.Nodes[id]
 }
 
+// eventKey returns the map key for a specific event within a node,
+// used to track expanded state in expandedEvents.
+func eventKey(nodeID string, idx int) string {
+	return nodeID + ":" + strconv.Itoa(idx)
+}
+
+// isToolEvent reports whether an event can be expanded to show input/output.
+func isToolEvent(e agent.Event) bool {
+	return e.Type == "PreToolUse" || e.Type == "PostToolUse"
+}
+
+// innerWidth returns the usable content width inside the right panel.
+func (m Model) innerWidth() int {
+	leftW := m.width * 35 / 100
+	rightW := m.width - leftW
+	return max(1, rightW-2)
+}
+
+// wrappedLineCount returns how many display lines s occupies when wrapped at
+// width runes per line, splitting first on existing newlines.
+func wrappedLineCount(s string, width int) int {
+	if width <= 0 || s == "" {
+		return 1
+	}
+	count := 0
+	for _, physical := range strings.Split(s, "\n") {
+		runes := []rune(physical)
+		if len(runes) == 0 {
+			count++
+			continue
+		}
+		count += (len(runes) + width - 1) / width
+	}
+	if count == 0 {
+		return 1
+	}
+	return count
+}
+
+// linesForEvent returns the number of screen lines that the event at idx
+// occupies, accounting for whether it is currently expanded.
+func (m *Model) linesForEvent(node *agent.Node, idx int) int {
+	e := node.Events[idx]
+	key := eventKey(node.ID, idx)
+	if !isToolEvent(e) || !m.expandedEvents[key] {
+		return 1
+	}
+	innerW := m.innerWidth()
+	const indent = 5 // "│    " prefix
+	count := 3       // header line + "│  Input:" label + trailing "│"
+	count += wrappedLineCount(e.Input, innerW-indent)
+	if e.Response != "" {
+		count += 1 + wrappedLineCount(e.Response, innerW-indent)
+	}
+	return count
+}
+
 // clampEventScroll adjusts eventScroll so it stays within the bounds of the
 // focused node's event list. Call this after scrolling or switching agents.
 func (m *Model) clampEventScroll() {
@@ -222,7 +284,11 @@ func (m *Model) clampEventScroll() {
 		return
 	}
 	viewH := max(1, m.height-footerHeight-2)
-	maxScroll := max(0, len(node.Events)-viewH)
+	totalLines := 0
+	for i := range node.Events {
+		totalLines += m.linesForEvent(node, i)
+	}
+	maxScroll := max(0, totalLines-viewH)
 	if m.eventScroll > maxScroll {
 		m.eventScroll = maxScroll
 	}
@@ -231,10 +297,38 @@ func (m *Model) clampEventScroll() {
 	}
 }
 
-// scrollEventToBottom sets eventScroll to the maximum scroll position for the
-// focused node, so the most-recent events are visible. Safe to call before
-// a window size is known (clampEventScroll will reduce to 0 in that case).
+// scrollToCursor adjusts eventScroll so the event at eventCursor is visible.
+func (m *Model) scrollToCursor() {
+	node := m.focusedNode()
+	if node == nil || len(node.Events) == 0 {
+		m.eventScroll = 0
+		return
+	}
+	m.eventCursor = max(0, min(m.eventCursor, len(node.Events)-1))
+	viewH := max(1, m.height-footerHeight-2)
+	firstLine := 0
+	for i := 0; i < m.eventCursor; i++ {
+		firstLine += m.linesForEvent(node, i)
+	}
+	lastLine := firstLine + m.linesForEvent(node, m.eventCursor) - 1
+	if firstLine < m.eventScroll {
+		m.eventScroll = firstLine
+	}
+	if lastLine >= m.eventScroll+viewH {
+		m.eventScroll = lastLine - viewH + 1
+	}
+	m.clampEventScroll()
+}
+
+// scrollEventToBottom sets eventScroll and eventCursor to show the most-recent
+// event. Safe to call before a window size is known.
 func (m *Model) scrollEventToBottom() {
+	node := m.focusedNode()
+	if node != nil && len(node.Events) > 0 {
+		m.eventCursor = len(node.Events) - 1
+	} else {
+		m.eventCursor = 0
+	}
 	m.eventScroll = math.MaxInt
 	m.clampEventScroll()
 }
@@ -299,8 +393,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.activePanel = (m.activePanel + 1) % 2
 		case "j", "down":
 			if m.activePanel == panelEvents {
-				m.eventScroll++
-				m.clampEventScroll()
+				if node := m.focusedNode(); node != nil && m.eventCursor < len(node.Events)-1 {
+					m.eventCursor++
+					m.scrollToCursor()
+				}
 			} else {
 				n := len(m.visibleNodes())
 				if n > 0 && m.cursor < n-1 {
@@ -311,8 +407,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "k", "up":
 			if m.activePanel == panelEvents {
-				m.eventScroll--
-				m.clampEventScroll()
+				if m.eventCursor > 0 {
+					m.eventCursor--
+					m.scrollToCursor()
+				}
 			} else {
 				if m.cursor > 0 {
 					m.cursor--
@@ -346,18 +444,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cursor = 0
 			m.scrollOffset = 0
 		case "enter":
-			vn := m.visibleNodes()
-			if m.cursor < len(vn) {
-				id := vn[m.cursor].id
-				if focused, ok := m.agents.Nodes[id]; ok && focused.GroupID != "" {
-					gid := focused.GroupID
-					// Un-mark all siblings in this group, then mark the focused node.
-					for _, rid := range m.agents.Roots {
-						if rn, ok := m.agents.Nodes[rid]; ok && rn.GroupID == gid {
-							rn.Winner = false
-						}
+			if m.activePanel == panelEvents {
+				node := m.focusedNode()
+				if node != nil && m.eventCursor < len(node.Events) {
+					e := node.Events[m.eventCursor]
+					if isToolEvent(e) {
+						key := eventKey(node.ID, m.eventCursor)
+						m.expandedEvents[key] = !m.expandedEvents[key]
+						m.scrollToCursor()
 					}
-					focused.Winner = true
+				}
+			} else {
+				vn := m.visibleNodes()
+				if m.cursor < len(vn) {
+					id := vn[m.cursor].id
+					if focused, ok := m.agents.Nodes[id]; ok && focused.GroupID != "" {
+						gid := focused.GroupID
+						// Un-mark all siblings in this group, then mark the focused node.
+						for _, rid := range m.agents.Roots {
+							if rn, ok := m.agents.Nodes[rid]; ok && rn.GroupID == gid {
+								rn.Winner = false
+							}
+						}
+						focused.Winner = true
+					}
 				}
 			}
 		}

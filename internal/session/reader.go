@@ -28,8 +28,9 @@ type rawMessage struct {
 // contentBlock represents a single block in a message content array.
 // We only care about tool_use blocks (to reconstruct PreToolUse events).
 type contentBlock struct {
-	Type string `json:"type"`
-	Name string `json:"name"` // populated for tool_use blocks
+	Type  string          `json:"type"`
+	Name  string          `json:"name"`  // populated for tool_use blocks
+	Input json.RawMessage `json:"input"` // raw JSON tool parameters for tool_use blocks
 }
 
 // record captures the fields we need from each JSONL line.
@@ -163,6 +164,7 @@ func parseNodes(path string) ([]agent.Node, error) {
 					Type:      "PreToolUse",
 					SessionID: rec.SessionID,
 					Tool:      block.Name,
+					Input:     string(block.Input),
 					Timestamp: ts,
 				})
 			}
