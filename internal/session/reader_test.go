@@ -136,6 +136,36 @@ func TestLoad_ReturnsNodesForMatchingSessions(t *testing.T) {
 	}
 }
 
+func TestLoad_RehydrationIdempotent(t *testing.T) {
+	// Verify that parsing the same JSONL file twice (simulating a restart)
+	// produces identical session IDs — re-hydration is deterministic.
+	dir := t.TempDir()
+	path := writeTempJSONL(t, dir, "session.jsonl", []string{
+		`{"type":"user","sessionId":"id-one","cwd":"/project"}`,
+		`{"type":"assistant","sessionId":"id-one","cwd":"/project"}`,
+		`{"type":"user","sessionId":"id-two","cwd":"/project"}`,
+	})
+
+	ids1, err := parseSessionIDs(path)
+	if err != nil {
+		t.Fatalf("first parse: %v", err)
+	}
+
+	ids2, err := parseSessionIDs(path)
+	if err != nil {
+		t.Fatalf("second parse: %v", err)
+	}
+
+	if len(ids1) != len(ids2) {
+		t.Fatalf("re-hydration mismatch: first=%v second=%v", ids1, ids2)
+	}
+	for i := range ids1 {
+		if ids1[i] != ids2[i] {
+			t.Errorf("ids[%d]: first=%q second=%q", i, ids1[i], ids2[i])
+		}
+	}
+}
+
 func TestLoad_NodeNames(t *testing.T) {
 	// Verify that long IDs get the "session:XXXXXXXX" prefix treatment.
 	dir := t.TempDir()
