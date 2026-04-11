@@ -19,6 +19,7 @@ import (
 
 	"github.com/hcarminati/orchard/internal/agent"
 	"github.com/hcarminati/orchard/internal/hidden"
+	"github.com/hcarminati/orchard/internal/state"
 )
 
 // panel identifies which panel currently has keyboard focus.
@@ -88,6 +89,9 @@ const idleDuration = 3 * time.Second
 // it is assumed closed and transitions to Done (grey).
 const doneDuration = 10 * time.Minute
 
+// stateSavedMsg is returned by the save-state command when the write completes.
+type stateSavedMsg struct{ err error }
+
 // hideSavedMsg is returned by the save-hidden command when the write completes.
 // The error is nil on success.
 type hideSavedMsg struct{ err error }
@@ -153,18 +157,36 @@ type Model struct {
 	pendingSave     bool                   // true when hiddenSessions was mutated before Init() ran (auto-hide at startup)
 }
 
+// autoHideAge is how long a session must be inactive before it is automatically
+// hidden from the agent list on startup.
+const autoHideAge = 7 * 24 * time.Hour
+
 // New creates a Model initialized with session data and a hook event channel.
 //
 // nodes is the initial set of agents loaded from JSONL on startup (may be nil).
 // eventCh delivers incoming hook events from the embedded HTTP server; pass nil
 // to run without live updates (useful in tests).
 // hiddenIDs is the set of session IDs loaded from hidden.json; pass nil for none.
-// autoHideAge is how long a session must be inactive before it is automatically
-// hidden from the agent list on startup.
-const autoHideAge = 7 * 24 * time.Hour
-
-func New(nodes []agent.Node, eventCh <-chan agent.Event, hiddenIDs map[string]bool) Model {
-	return newWithClock(nodes, eventCh, hiddenIDs, time.Now())
+// expandedIDs is the set of root session IDs that were expanded on last exit,
+// loaded from state.json; pass nil for none. All root sessions start collapsed
+// by default — running sessions are auto-expanded, and any ID in expandedIDs
+// is also expanded.
+func New(nodes []agent.Node, eventCh <-chan agent.Event, hiddenIDs map[string]bool, expandedIDs map[string]bool) Model {
+	m := newWithClock(nodes, eventCh, hiddenIDs, time.Now())
+	// Collapse all root nodes by default.
+	for _, id := range m.agents.Roots {
+		if m.effectiveStatus(id) == agent.StatusRunning {
+			// Auto-expand the currently active session so the user immediately
+			// sees what is happening.
+			continue
+		}
+		if expandedIDs[id] {
+			// Restore the expanded state from the previous session.
+			continue
+		}
+		m.collapsed[id] = true
+	}
+	return m
 }
 
 // newWithClock is the testable core of New. now is used as the reference time
@@ -244,6 +266,22 @@ func saveHidden(h map[string]bool) tea.Cmd {
 	}
 	return func() tea.Msg {
 		return hideSavedMsg{err: hidden.Save(snap)}
+	}
+}
+
+// saveState returns a Cmd that persists the current expand/collapse state to
+// disk. Only root-level sessions are saved — the set of roots that are NOT
+// collapsed is written as the "expanded" list so new sessions start collapsed
+// by default on the next launch.
+func saveState(collapsed map[string]bool, roots []string) tea.Cmd {
+	expanded := make(map[string]bool, len(roots))
+	for _, id := range roots {
+		if !collapsed[id] {
+			expanded[id] = true
+		}
+	}
+	return func() tea.Msg {
+		return stateSavedMsg{err: state.Save(expanded)}
 	}
 }
 
@@ -678,6 +716,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.cursor = max(0, newLen-1)
 				}
 				m.clampScroll()
+				return m, saveState(m.collapsed, m.agents.Roots)
 			}
 		case "[":
 			n := len(rightTabs)
@@ -803,6 +842,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.cursor = max(0, newLen-1)
 					}
 					m.clampScroll()
+					return m, saveState(m.collapsed, m.agents.Roots)
 				}
 			} else if msg.Y == 0 {
 				// Right panel top border: tabs start 2 columns in (after ╭─).
@@ -908,6 +948,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case hideSavedMsg:
 		// Save completed; nothing to do (errors are silently dropped — the TUI
 		// should not crash because a config write failed).
+
+	case stateSavedMsg:
+		// Save completed; nothing to do.
 	}
 
 	return m, nil
