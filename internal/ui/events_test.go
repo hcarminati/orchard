@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -601,14 +602,20 @@ func TestEventsContent_PermissionRequestNoTool_FallsBackToMessage(t *testing.T) 
 	}
 }
 
-func TestEventsContent_PermissionRequestNotExpandable(t *testing.T) {
+func TestEventsContent_PermissionRequest_Expandable(t *testing.T) {
 	nodes := []agent.Node{
 		{
 			ID:     "s1xxxxxxxx",
 			Name:   "session:s1xxxxxx",
 			Status: agent.StatusRunning,
 			Events: []agent.Event{
-				{Type: "PermissionRequest", Tool: "Bash", SessionID: "s1xxxxxxxx", Timestamp: time.Now()},
+				{
+					Type:      "PermissionRequest",
+					Tool:      "Bash",
+					Input:     `{"command":"go test ./..."}`,
+					SessionID: "s1xxxxxxxx",
+					Timestamp: time.Now(),
+				},
 			},
 		},
 	}
@@ -622,8 +629,126 @@ func TestEventsContent_PermissionRequestNotExpandable(t *testing.T) {
 	m = next.(Model)
 
 	content := m.eventsContent()
-	if strings.Contains(content, "Input:") {
-		t.Errorf("expected PermissionRequest to be non-expandable, got: %q", content)
+	if !strings.Contains(content, "Input:") {
+		t.Errorf("expected PermissionRequest to be expandable (show Input:), got: %q", content)
+	}
+	if !strings.Contains(content, "go test ./...") {
+		t.Errorf("expected full command in expanded view, got: %q", content)
+	}
+}
+
+func TestEventsContent_PermissionRequest_Bash_ShowsCommand(t *testing.T) {
+	nodes := []agent.Node{
+		{
+			ID:     "s1xxxxxxxx",
+			Name:   "session:s1xxxxxx",
+			Status: agent.StatusRunning,
+			Events: []agent.Event{
+				{
+					Type:      "PermissionRequest",
+					Tool:      "Bash",
+					Input:     `{"command":"go test ./..."}`,
+					SessionID: "s1xxxxxxxx",
+					Timestamp: time.Now(),
+				},
+			},
+		},
+	}
+	m := New(nodes, nil)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	content := next.(Model).eventsContent()
+
+	if !strings.Contains(content, "►") {
+		t.Errorf("expected '►' separator in collapsed PermissionRequest row, got: %q", content)
+	}
+	if !strings.Contains(content, "go test ./...") {
+		t.Errorf("expected command preview in collapsed row, got: %q", content)
+	}
+}
+
+func TestEventsContent_PermissionRequest_Read_ShowsFilePathWithTilde(t *testing.T) {
+	home := os.Getenv("HOME")
+	if home == "" {
+		t.Skip("HOME not set")
+	}
+	nodes := []agent.Node{
+		{
+			ID:     "s1xxxxxxxx",
+			Name:   "session:s1xxxxxx",
+			Status: agent.StatusRunning,
+			Events: []agent.Event{
+				{
+					Type:      "PermissionRequest",
+					Tool:      "Read",
+					Input:     `{"file_path":"` + home + `/orchard/main.go"}`,
+					SessionID: "s1xxxxxxxx",
+					Timestamp: time.Now(),
+				},
+			},
+		},
+	}
+	m := New(nodes, nil)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 200, Height: 40})
+	content := next.(Model).eventsContent()
+
+	if !strings.Contains(content, "~/orchard/main.go") {
+		t.Errorf("expected file_path with ~ prefix in collapsed row, got: %q", content)
+	}
+}
+
+func TestEventsContent_PermissionRequest_Write_ShowsFilePath(t *testing.T) {
+	nodes := []agent.Node{
+		{
+			ID:     "s1xxxxxxxx",
+			Name:   "session:s1xxxxxx",
+			Status: agent.StatusRunning,
+			Events: []agent.Event{
+				{
+					Type:      "PermissionRequest",
+					Tool:      "Write",
+					Input:     `{"file_path":"/tmp/output.go","content":"package main"}`,
+					SessionID: "s1xxxxxxxx",
+					Timestamp: time.Now(),
+				},
+			},
+		},
+	}
+	m := New(nodes, nil)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	content := next.(Model).eventsContent()
+
+	if !strings.Contains(content, "/tmp/output.go") {
+		t.Errorf("expected file_path in collapsed row for Write, got: %q", content)
+	}
+}
+
+func TestEventsContent_PermissionRequest_UnknownTool_ShowsTruncatedInput(t *testing.T) {
+	nodes := []agent.Node{
+		{
+			ID:     "s1xxxxxxxx",
+			Name:   "session:s1xxxxxx",
+			Status: agent.StatusRunning,
+			Events: []agent.Event{
+				{
+					Type:      "PermissionRequest",
+					Tool:      "WebFetch",
+					Input:     `{"url":"https://example.com","prompt":"summarize"}`,
+					SessionID: "s1xxxxxxxx",
+					Timestamp: time.Now(),
+				},
+			},
+		},
+	}
+	m := New(nodes, nil)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 300, Height: 40})
+	content := next.(Model).eventsContent()
+
+	if !strings.Contains(content, "►") {
+		t.Errorf("expected '►' separator for unknown tool PermissionRequest, got: %q", content)
+	}
+	// Raw JSON truncated to 40 chars — starts with {"url":
+	if !strings.Contains(content, `{"url":`) {
+		t.Errorf("expected truncated raw input for unknown tool, got: %q", content)
 	}
 }
 

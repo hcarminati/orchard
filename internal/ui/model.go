@@ -226,7 +226,7 @@ func eventKey(nodeID string, idx int) string {
 
 // isToolEvent reports whether an event can be expanded to show input/output.
 func isToolEvent(e agent.Event) bool {
-	return e.Type == "PreToolUse" || e.Type == "PostToolUse"
+	return e.Type == "PreToolUse" || e.Type == "PostToolUse" || e.Type == "PermissionRequest"
 }
 
 // innerWidth returns the usable content width inside the right panel.

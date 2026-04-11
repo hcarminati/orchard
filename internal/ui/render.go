@@ -362,6 +362,7 @@ func (m Model) eventsContent() string {
 	cursorStyle := lipgloss.NewStyle().Foreground(colorAccent)
 	borderStyle := lipgloss.NewStyle().Foreground(colorAccent)
 
+	home, _ := os.UserHomeDir()
 	var allLines []string
 	for idx, e := range node.Events {
 		isSelected := idx == m.eventCursor
@@ -393,6 +394,9 @@ func (m Model) eventsContent() string {
 			if tool != "" {
 				header += "  " + warningStyle.Render(tool)
 			}
+			if expanded {
+				header += "  " + mutedStyle.Render("▼")
+			}
 		default:
 			if e.Tool != "" {
 				header += "  " + toolStyle.Render(e.Tool)
@@ -407,8 +411,20 @@ func (m Model) eventsContent() string {
 		}
 
 		if !expanded {
-			// Collapsed: short input preview (≤20 chars) appended to the header.
-			if isToolEvent(e) && e.Input != "" {
+			if e.Type == "PermissionRequest" {
+				// PermissionRequest collapsed: ⚠  Tool  ►  {tool-specific preview}
+				if e.Input != "" {
+					preview := permissionPreview(e.Tool, e.Input, home)
+					if preview != "" {
+						header += "  " + mutedStyle.Render("►") + "  " + mutedStyle.Render(preview)
+					}
+				}
+				if lipgloss.Width(header) > innerW {
+					header = lipgloss.NewStyle().MaxWidth(innerW-1).Render(header) + "…"
+				}
+				allLines = append(allLines, header)
+			} else if isToolEvent(e) && e.Input != "" {
+				// Collapsed tool event: short input preview (≤20 chars) appended to header.
 				preview := "  " + inputPreview(e.Input)
 				full := header + preview
 				if lipgloss.Width(full) > innerW {
@@ -425,7 +441,6 @@ func (m Model) eventsContent() string {
 			// Expanded: header, then bordered KV block for input, then output.
 			allLines = append(allLines, header)
 			bar := borderStyle.Render("│")
-			home, _ := os.UserHomeDir()
 			if e.Input != "" {
 				allLines = append(allLines, bar+"  "+mutedStyle.Render("Input:"))
 				for _, l := range formatKV(e.Input, home) {
@@ -493,6 +508,51 @@ func inputPreview(input string) string {
 		}
 	}
 	return fmt.Sprintf("{%d fields}", len(obj))
+}
+
+// permissionPreview extracts the most relevant field from a PermissionRequest
+// tool input for inline display in the collapsed event row.
+//   - Bash       → command field
+//   - Read/Edit  → file_path with home directory replaced by ~
+//   - Write      → file_path (raw)
+//   - other      → raw input truncated to 40 runes
+func permissionPreview(tool, input, home string) string {
+	if input == "" {
+		return ""
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(input), &obj); err != nil {
+		return truncRunes(strings.ReplaceAll(input, "\n", " "), 40)
+	}
+	getString := func(key string) (string, bool) {
+		raw, ok := obj[key]
+		if !ok {
+			return "", false
+		}
+		var s string
+		if err := json.Unmarshal(raw, &s); err != nil {
+			return "", false
+		}
+		return s, true
+	}
+	switch tool {
+	case "Bash":
+		if s, ok := getString("command"); ok {
+			return truncRunes(strings.ReplaceAll(s, "\n", " "), 40)
+		}
+	case "Read", "Edit":
+		if s, ok := getString("file_path"); ok {
+			if home != "" && strings.HasPrefix(s, home) {
+				s = "~" + s[len(home):]
+			}
+			return truncRunes(s, 40)
+		}
+	case "Write":
+		if s, ok := getString("file_path"); ok {
+			return truncRunes(s, 40)
+		}
+	}
+	return truncRunes(strings.ReplaceAll(input, "\n", " "), 40)
 }
 
 // formatKV formats a JSON string as indented "key: value" lines.

@@ -307,6 +307,71 @@ func TestView_AgentToolCall_ChildNamedAfterSubagentType(t *testing.T) {
 	}
 }
 
+// --- permissionPreview ---
+
+func TestPermissionPreview_Bash_ExtractsCommand(t *testing.T) {
+	got := permissionPreview("Bash", `{"command":"go test ./...","timeout":30}`, "")
+	if got != "go test ./..." {
+		t.Errorf("expected 'go test ./...', got %q", got)
+	}
+}
+
+func TestPermissionPreview_Bash_TruncatesLongCommand(t *testing.T) {
+	cmd := strings.Repeat("x", 50)
+	got := permissionPreview("Bash", `{"command":"`+cmd+`"}`, "")
+	if len([]rune(got)) > 41 { // 40 + "…"
+		t.Errorf("expected command truncated at 40 runes, got %q (len %d)", got, len([]rune(got)))
+	}
+	if !strings.HasPrefix(got, strings.Repeat("x", 40)) {
+		t.Errorf("expected first 40 x's preserved, got %q", got)
+	}
+}
+
+func TestPermissionPreview_Read_ExtractsFilePathWithTilde(t *testing.T) {
+	got := permissionPreview("Read", `{"file_path":"/home/user/project/main.go"}`, "/home/user")
+	if got != "~/project/main.go" {
+		t.Errorf("expected '~/project/main.go', got %q", got)
+	}
+}
+
+func TestPermissionPreview_Edit_ExtractsFilePathWithTilde(t *testing.T) {
+	got := permissionPreview("Edit", `{"file_path":"/home/user/file.go","old_string":"a","new_string":"b"}`, "/home/user")
+	if got != "~/file.go" {
+		t.Errorf("expected '~/file.go', got %q", got)
+	}
+}
+
+func TestPermissionPreview_Write_ExtractsFilePathRaw(t *testing.T) {
+	got := permissionPreview("Write", `{"file_path":"/tmp/out.go","content":"x"}`, "/tmp")
+	// Write does not apply ~ replacement.
+	if got != "/tmp/out.go" {
+		t.Errorf("expected '/tmp/out.go' without ~ replacement, got %q", got)
+	}
+}
+
+func TestPermissionPreview_UnknownTool_TruncatesRawInput(t *testing.T) {
+	input := `{"url":"https://example.com"}`
+	got := permissionPreview("WebFetch", input, "")
+	if !strings.HasPrefix(got, `{"url":`) {
+		t.Errorf("expected raw JSON as fallback, got %q", got)
+	}
+}
+
+func TestPermissionPreview_EmptyInput_ReturnsEmpty(t *testing.T) {
+	got := permissionPreview("Bash", "", "")
+	if got != "" {
+		t.Errorf("expected empty string for empty input, got %q", got)
+	}
+}
+
+func TestPermissionPreview_MissingField_FallsBackToRaw(t *testing.T) {
+	// Bash event where the JSON has no "command" field.
+	got := permissionPreview("Bash", `{"description":"do stuff"}`, "")
+	if !strings.Contains(got, "description") {
+		t.Errorf("expected raw input fallback when command field missing, got %q", got)
+	}
+}
+
 // --- Footer hints ---
 
 func TestFooter_SpaceHint_OnlyWhenCursorOnNodeWithChildren(t *testing.T) {
