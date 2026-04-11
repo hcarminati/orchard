@@ -389,9 +389,21 @@ func (m Model) eventsContent() string {
 	cursorStyle := lipgloss.NewStyle().Foreground(colorAccent)
 	borderStyle := lipgloss.NewStyle().Foreground(colorAccent)
 
+	// hasPendingPermission reports whether the event immediately after idx is a
+	// PermissionRequest that is absorbed into this row's display.
+	hasPendingPermission := func(idx int) bool {
+		next := idx + 1
+		return next < len(node.Events) && isAbsorbedPermission(node.Events, next)
+	}
+
 	home, _ := os.UserHomeDir()
 	var allLines []string
 	for idx, e := range node.Events {
+		// Absorbed PermissionRequest events are rendered as part of the
+		// preceding PreToolUse row — skip them entirely here.
+		if isAbsorbedPermission(node.Events, idx) {
+			continue
+		}
 		isSelected := idx == m.eventCursor
 		key := eventKey(node.ID, idx)
 		expanded := isToolEvent(e) && m.expandedEvents[key]
@@ -446,6 +458,9 @@ func (m Model) eventsContent() string {
 			if isToolEvent(e) {
 				if expanded {
 					header += "  " + mutedStyle.Render("▼")
+				} else if hasPendingPermission(idx) {
+					// PermissionRequest for this tool call is absorbed into this row.
+					header += "  " + warningStyle.Render("⚠")
 				} else {
 					header += "  " + mutedStyle.Render("▶")
 				}

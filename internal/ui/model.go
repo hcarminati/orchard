@@ -230,6 +230,28 @@ func isToolEvent(e agent.Event) bool {
 		e.Type == "PermissionRequest" || e.Type == "Notification"
 }
 
+// isAbsorbedPermission reports whether the event at idx is a PermissionRequest
+// that should be collapsed into the preceding PreToolUse row. The three
+// conditions must all hold: same tool name, identical input, and arrival within
+// one second of the PreToolUse.
+func isAbsorbedPermission(events []agent.Event, idx int) bool {
+	if idx == 0 || idx >= len(events) {
+		return false
+	}
+	e, prev := events[idx], events[idx-1]
+	if e.Type != "PermissionRequest" || prev.Type != "PreToolUse" {
+		return false
+	}
+	if e.Tool != prev.Tool || e.Input != prev.Input {
+		return false
+	}
+	diff := e.Timestamp.Sub(prev.Timestamp)
+	if diff < 0 {
+		diff = -diff
+	}
+	return diff <= time.Second
+}
+
 // innerWidth returns the usable content width inside the right panel.
 func (m Model) innerWidth() int {
 	leftW := m.width * 35 / 100
@@ -260,7 +282,12 @@ func wrappedLineCount(s string, width int) int {
 
 // linesForEvent returns the number of screen lines that the event at idx
 // occupies, accounting for whether it is currently expanded.
+// Absorbed PermissionRequest events return 0 — they are rendered inside the
+// preceding PreToolUse row and take no space of their own.
 func (m *Model) linesForEvent(node *agent.Node, idx int) int {
+	if isAbsorbedPermission(node.Events, idx) {
+		return 0
+	}
 	e := node.Events[idx]
 	key := eventKey(node.ID, idx)
 	if !isToolEvent(e) || !m.expandedEvents[key] {
@@ -353,10 +380,15 @@ func (m *Model) scrollToCursor() {
 
 // scrollEventToBottom sets eventScroll and eventCursor to show the most-recent
 // event. Safe to call before a window size is known.
+// Absorbed PermissionRequest events are skipped: the cursor lands on the
+// preceding PreToolUse row instead.
 func (m *Model) scrollEventToBottom() {
 	node := m.focusedNode()
 	if node != nil && len(node.Events) > 0 {
 		m.eventCursor = len(node.Events) - 1
+		for m.eventCursor > 0 && isAbsorbedPermission(node.Events, m.eventCursor) {
+			m.eventCursor--
+		}
 	} else {
 		m.eventCursor = 0
 	}
@@ -426,6 +458,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.activePanel == panelEvents {
 				if node := m.focusedNode(); node != nil && m.eventCursor < len(node.Events)-1 {
 					m.eventCursor++
+					for m.eventCursor < len(node.Events)-1 && isAbsorbedPermission(node.Events, m.eventCursor) {
+						m.eventCursor++
+					}
 					m.scrollToCursor()
 				}
 			} else {
@@ -440,6 +475,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.activePanel == panelEvents {
 				if m.eventCursor > 0 {
 					m.eventCursor--
+					if node := m.focusedNode(); node != nil {
+						for m.eventCursor > 0 && isAbsorbedPermission(node.Events, m.eventCursor) {
+							m.eventCursor--
+						}
+					}
 					m.scrollToCursor()
 				}
 			} else {

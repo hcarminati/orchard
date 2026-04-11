@@ -552,6 +552,140 @@ func TestEventsContent_NotificationEmptyMessage_ShowsArrow(t *testing.T) {
 	}
 }
 
+// --- PermissionRequest absorption ---
+
+func TestIsAbsorbedPermission_MatchingPair(t *testing.T) {
+	ts := time.Now()
+	events := []agent.Event{
+		{Type: "PreToolUse", Tool: "Bash", Input: `{"command":"go test ./..."}`, Timestamp: ts},
+		{Type: "PermissionRequest", Tool: "Bash", Input: `{"command":"go test ./..."}`, Timestamp: ts.Add(100 * time.Millisecond)},
+	}
+	if !isAbsorbedPermission(events, 1) {
+		t.Error("expected PermissionRequest to be absorbed into matching PreToolUse")
+	}
+}
+
+func TestIsAbsorbedPermission_DifferentTool(t *testing.T) {
+	ts := time.Now()
+	events := []agent.Event{
+		{Type: "PreToolUse", Tool: "Read", Input: `{"file_path":"/tmp/a"}`, Timestamp: ts},
+		{Type: "PermissionRequest", Tool: "Bash", Input: `{"file_path":"/tmp/a"}`, Timestamp: ts.Add(100 * time.Millisecond)},
+	}
+	if isAbsorbedPermission(events, 1) {
+		t.Error("expected non-absorption when tool names differ")
+	}
+}
+
+func TestIsAbsorbedPermission_DifferentInput(t *testing.T) {
+	ts := time.Now()
+	events := []agent.Event{
+		{Type: "PreToolUse", Tool: "Bash", Input: `{"command":"ls"}`, Timestamp: ts},
+		{Type: "PermissionRequest", Tool: "Bash", Input: `{"command":"rm -rf /"}`, Timestamp: ts.Add(100 * time.Millisecond)},
+	}
+	if isAbsorbedPermission(events, 1) {
+		t.Error("expected non-absorption when inputs differ")
+	}
+}
+
+func TestIsAbsorbedPermission_TooOld(t *testing.T) {
+	ts := time.Now()
+	events := []agent.Event{
+		{Type: "PreToolUse", Tool: "Bash", Input: `{"command":"go test"}`, Timestamp: ts},
+		{Type: "PermissionRequest", Tool: "Bash", Input: `{"command":"go test"}`, Timestamp: ts.Add(2 * time.Second)},
+	}
+	if isAbsorbedPermission(events, 1) {
+		t.Error("expected non-absorption when timestamp gap > 1 second")
+	}
+}
+
+func TestIsAbsorbedPermission_NotFirstEvent(t *testing.T) {
+	ts := time.Now()
+	events := []agent.Event{
+		{Type: "PermissionRequest", Tool: "Bash", Input: `{"command":"x"}`, Timestamp: ts},
+	}
+	if isAbsorbedPermission(events, 0) {
+		t.Error("expected non-absorption for the first event (no preceding PreToolUse)")
+	}
+}
+
+func TestEventsContent_AbsorbedPermission_HidesPermissionRow(t *testing.T) {
+	ts := time.Now()
+	nodes := []agent.Node{
+		{
+			ID:     "s1xxxxxxxx",
+			Name:   "session:s1xxxxxx",
+			Status: agent.StatusRunning,
+			Events: []agent.Event{
+				{Type: "PreToolUse", Tool: "Bash", Input: `{"command":"go test ./..."}`, SessionID: "s1xxxxxxxx", Timestamp: ts},
+				{Type: "PermissionRequest", Tool: "Bash", Input: `{"command":"go test ./..."}`, SessionID: "s1xxxxxxxx", Timestamp: ts.Add(50 * time.Millisecond)},
+			},
+		},
+	}
+	m := New(nodes, nil)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	content := next.(Model).eventsContent()
+
+	// Only one row should appear — the PermissionRequest row is absorbed.
+	lines := strings.Split(strings.TrimRight(content, "\n"), "\n")
+	if len(lines) != 1 {
+		t.Errorf("expected 1 visible row (absorbed), got %d lines:\n%s", len(lines), content)
+	}
+	// The PreToolUse row should show ⚠ instead of ▶.
+	if !strings.Contains(content, "⚠") {
+		t.Errorf("expected ⚠ on PreToolUse row when permission is absorbed, got: %q", content)
+	}
+	if strings.Contains(content, "PermissionRequest") {
+		t.Errorf("expected PermissionRequest label to be hidden, got: %q", content)
+	}
+}
+
+func TestEventsContent_AbsorbedPermission_ShowsPreview(t *testing.T) {
+	ts := time.Now()
+	nodes := []agent.Node{
+		{
+			ID:     "s1xxxxxxxx",
+			Name:   "session:s1xxxxxx",
+			Status: agent.StatusRunning,
+			Events: []agent.Event{
+				{Type: "PreToolUse", Tool: "Bash", Input: `{"command":"go test ./..."}`, SessionID: "s1xxxxxxxx", Timestamp: ts},
+				{Type: "PermissionRequest", Tool: "Bash", Input: `{"command":"go test ./..."}`, SessionID: "s1xxxxxxxx", Timestamp: ts.Add(50 * time.Millisecond)},
+			},
+		},
+	}
+	m := New(nodes, nil)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 200, Height: 40})
+	content := next.(Model).eventsContent()
+
+	if !strings.Contains(content, "go test ./...") {
+		t.Errorf("expected command preview on collapsed absorbed row, got: %q", content)
+	}
+}
+
+func TestEventsContent_NonMatchingPermission_ShowsBothRows(t *testing.T) {
+	ts := time.Now()
+	nodes := []agent.Node{
+		{
+			ID:     "s1xxxxxxxx",
+			Name:   "session:s1xxxxxx",
+			Status: agent.StatusRunning,
+			Events: []agent.Event{
+				{Type: "PreToolUse", Tool: "Bash", Input: `{"command":"ls"}`, SessionID: "s1xxxxxxxx", Timestamp: ts},
+				{Type: "PermissionRequest", Tool: "Bash", Input: `{"command":"rm -rf /"}`, SessionID: "s1xxxxxxxx", Timestamp: ts.Add(50 * time.Millisecond)},
+			},
+		},
+	}
+	m := New(nodes, nil)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	content := next.(Model).eventsContent()
+
+	if !strings.Contains(content, "PreToolUse") {
+		t.Errorf("expected PreToolUse row, got: %q", content)
+	}
+	if !strings.Contains(content, "PermissionRequest") {
+		t.Errorf("expected standalone PermissionRequest row when inputs differ, got: %q", content)
+	}
+}
+
 func TestEventsContent_Notification_Expandable(t *testing.T) {
 	nodes := []agent.Node{
 		{
