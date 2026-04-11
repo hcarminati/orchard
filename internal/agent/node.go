@@ -34,7 +34,7 @@ const (
 
 // Event is a single hook event received from Claude Code for a particular session.
 type Event struct {
-	// Type is the hook event name: "PreToolUse", "PostToolUse", "Stop", "SubagentStop", "Notification".
+	// Type is the hook event name: "PreToolUse", "PostToolUse", "Stop", "SubagentStop", "Notification", "PermissionRequest".
 	Type string
 	// SessionID identifies which session this event belongs to.
 	SessionID string

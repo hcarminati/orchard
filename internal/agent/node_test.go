@@ -455,6 +455,37 @@ func TestApplyEvent_Stop_MarksRunningChildrenDone(t *testing.T) {
 	}
 }
 
+func TestApplyEvent_NotificationDoesNotChangeStatus(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "s1", Status: StatusRunning})
+	tree.ApplyEvent(Event{Type: "Notification", SessionID: "s1", Message: "you have a message", Timestamp: time.Now()})
+
+	node := tree.Nodes["s1"]
+	if node.Status != StatusRunning {
+		t.Errorf("expected StatusRunning unchanged after Notification, got %d", node.Status)
+	}
+	if len(node.Events) != 1 {
+		t.Errorf("expected 1 event appended, got %d", len(node.Events))
+	}
+	if node.Events[0].Message != "you have a message" {
+		t.Errorf("expected event Message preserved, got %q", node.Events[0].Message)
+	}
+}
+
+func TestApplyEvent_PermissionRequestDoesNotChangeStatus(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "s1", Status: StatusRunning})
+	tree.ApplyEvent(Event{Type: "PermissionRequest", SessionID: "s1", Tool: "Bash", Timestamp: time.Now()})
+
+	node := tree.Nodes["s1"]
+	if node.Status != StatusRunning {
+		t.Errorf("expected StatusRunning unchanged after PermissionRequest, got %d", node.Status)
+	}
+	if len(node.Events) != 1 {
+		t.Errorf("expected 1 event appended, got %d", len(node.Events))
+	}
+}
+
 func TestNodeFields_ModelToolsSkillsPrompt(t *testing.T) {
 	n := NewNode("x")
 	n.Model = ModelSonnet

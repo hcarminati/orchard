@@ -373,17 +373,36 @@ func (m Model) eventsContent() string {
 			prefix = cursorStyle.Render("> ")
 		}
 
+		warningStyle := lipgloss.NewStyle().Foreground(colorYellow)
 		ts := tsStyle.Render(e.Timestamp.Format("Jan 02 15:04:05"))
 		header := prefix + ts + "  " + e.Type
-		if e.Tool != "" {
-			header += "  " + toolStyle.Render(e.Tool)
-		}
 
-		if isToolEvent(e) {
-			if expanded {
-				header += "  " + mutedStyle.Render("▼")
-			} else {
-				header += "  " + mutedStyle.Render("▶")
+		switch e.Type {
+		case "Notification":
+			header += "  " + mutedStyle.Render("►")
+			if e.Message != "" {
+				msg := truncRunes(strings.ReplaceAll(e.Message, "\n", " "), 40)
+				header += "  " + mutedStyle.Render(msg)
+			}
+		case "PermissionRequest":
+			header += "  " + warningStyle.Render("⚠")
+			tool := e.Tool
+			if tool == "" {
+				tool = e.Message
+			}
+			if tool != "" {
+				header += "  " + warningStyle.Render(tool)
+			}
+		default:
+			if e.Tool != "" {
+				header += "  " + toolStyle.Render(e.Tool)
+			}
+			if isToolEvent(e) {
+				if expanded {
+					header += "  " + mutedStyle.Render("▼")
+				} else {
+					header += "  " + mutedStyle.Render("▶")
+				}
 			}
 		}
 

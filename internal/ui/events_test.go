@@ -477,6 +477,156 @@ func TestEventsContent_NonToolEventNotExpandable(t *testing.T) {
 	}
 }
 
+func TestEventsContent_NotificationShowsArrowAndMessage(t *testing.T) {
+	nodes := []agent.Node{
+		{
+			ID:     "s1xxxxxxxx",
+			Name:   "session:s1xxxxxx",
+			Status: agent.StatusRunning,
+			Events: []agent.Event{
+				{Type: "Notification", Message: "Claude needs your attention", SessionID: "s1xxxxxxxx", Timestamp: time.Now()},
+			},
+		},
+	}
+	m := New(nodes, nil)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	content := next.(Model).eventsContent()
+
+	if !strings.Contains(content, "Notification") {
+		t.Errorf("expected 'Notification' in events content, got: %q", content)
+	}
+	if !strings.Contains(content, "►") {
+		t.Errorf("expected '►' separator in Notification row, got: %q", content)
+	}
+	if !strings.Contains(content, "Claude needs your attention") {
+		t.Errorf("expected notification message in events content, got: %q", content)
+	}
+}
+
+func TestEventsContent_NotificationLongMessage_TruncatedAt40(t *testing.T) {
+	msg := strings.Repeat("x", 50)
+	nodes := []agent.Node{
+		{
+			ID:     "s1xxxxxxxx",
+			Name:   "session:s1xxxxxx",
+			Status: agent.StatusRunning,
+			Events: []agent.Event{
+				{Type: "Notification", Message: msg, SessionID: "s1xxxxxxxx", Timestamp: time.Now()},
+			},
+		},
+	}
+	m := New(nodes, nil)
+	// Wide terminal so panel width doesn't interfere with the 40-char truncation check.
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 300, Height: 40})
+	content := next.(Model).eventsContent()
+
+	// 50 x's truncated to 40 + "…" — the full 50-char string must not appear.
+	if strings.Contains(content, msg) {
+		t.Errorf("expected message truncated at 40 chars, but full message appeared: %q", content)
+	}
+	if !strings.Contains(content, strings.Repeat("x", 40)) {
+		t.Errorf("expected first 40 chars of message in content, got: %q", content)
+	}
+}
+
+func TestEventsContent_NotificationEmptyMessage_ShowsArrow(t *testing.T) {
+	nodes := []agent.Node{
+		{
+			ID:     "s1xxxxxxxx",
+			Name:   "session:s1xxxxxx",
+			Status: agent.StatusRunning,
+			Events: []agent.Event{
+				{Type: "Notification", Message: "", SessionID: "s1xxxxxxxx", Timestamp: time.Now()},
+			},
+		},
+	}
+	m := New(nodes, nil)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	content := next.(Model).eventsContent()
+
+	if !strings.Contains(content, "Notification") {
+		t.Errorf("expected 'Notification' in events content, got: %q", content)
+	}
+	if !strings.Contains(content, "►") {
+		t.Errorf("expected '►' separator even with empty message, got: %q", content)
+	}
+}
+
+func TestEventsContent_PermissionRequestShowsWarningAndTool(t *testing.T) {
+	nodes := []agent.Node{
+		{
+			ID:     "s1xxxxxxxx",
+			Name:   "session:s1xxxxxx",
+			Status: agent.StatusRunning,
+			Events: []agent.Event{
+				{Type: "PermissionRequest", Tool: "Bash", SessionID: "s1xxxxxxxx", Timestamp: time.Now()},
+			},
+		},
+	}
+	m := New(nodes, nil)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	content := next.(Model).eventsContent()
+
+	if !strings.Contains(content, "PermissionRequest") {
+		t.Errorf("expected 'PermissionRequest' in events content, got: %q", content)
+	}
+	if !strings.Contains(content, "⚠") {
+		t.Errorf("expected '⚠' warning indicator in PermissionRequest row, got: %q", content)
+	}
+	if !strings.Contains(content, "Bash") {
+		t.Errorf("expected tool name after warning indicator, got: %q", content)
+	}
+}
+
+func TestEventsContent_PermissionRequestNoTool_FallsBackToMessage(t *testing.T) {
+	nodes := []agent.Node{
+		{
+			ID:     "s1xxxxxxxx",
+			Name:   "session:s1xxxxxx",
+			Status: agent.StatusRunning,
+			Events: []agent.Event{
+				{Type: "PermissionRequest", Tool: "", Message: "approve network access", SessionID: "s1xxxxxxxx", Timestamp: time.Now()},
+			},
+		},
+	}
+	m := New(nodes, nil)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	content := next.(Model).eventsContent()
+
+	if !strings.Contains(content, "⚠") {
+		t.Errorf("expected '⚠' in PermissionRequest row, got: %q", content)
+	}
+	if !strings.Contains(content, "approve network access") {
+		t.Errorf("expected message as fallback description, got: %q", content)
+	}
+}
+
+func TestEventsContent_PermissionRequestNotExpandable(t *testing.T) {
+	nodes := []agent.Node{
+		{
+			ID:     "s1xxxxxxxx",
+			Name:   "session:s1xxxxxx",
+			Status: agent.StatusRunning,
+			Events: []agent.Event{
+				{Type: "PermissionRequest", Tool: "Bash", SessionID: "s1xxxxxxxx", Timestamp: time.Now()},
+			},
+		},
+	}
+	m := New(nodes, nil)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = next.(Model)
+
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = next.(Model)
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(Model)
+
+	content := m.eventsContent()
+	if strings.Contains(content, "Input:") {
+		t.Errorf("expected PermissionRequest to be non-expandable, got: %q", content)
+	}
+}
+
 func TestEventsContent_ExpandedLongInput_LineWrapped(t *testing.T) {
 	// Input longer than the panel width so it must wrap.
 	longInput := `{"path":"` + strings.Repeat("a", 200) + `"}`
