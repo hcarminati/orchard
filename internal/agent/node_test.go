@@ -111,13 +111,77 @@ func TestApplyEvent_StopSetsIdle(t *testing.T) {
 	}
 }
 
-func TestApplyEvent_SubagentStopSetsIdle(t *testing.T) {
+func TestApplyEvent_SubagentStopSetsDone(t *testing.T) {
 	tree := NewTree()
 	tree.AddNode(Node{ID: "s1", Status: StatusRunning})
 	tree.ApplyEvent(Event{Type: "SubagentStop", SessionID: "s1", Timestamp: time.Now()})
 
-	if tree.Nodes["s1"].Status != StatusIdle {
-		t.Errorf("expected StatusIdle after SubagentStop, got %d", tree.Nodes["s1"].Status)
+	// SubagentStop means the subagent's session is permanently finished.
+	if tree.Nodes["s1"].Status != StatusDone {
+		t.Errorf("expected StatusDone after SubagentStop, got %d", tree.Nodes["s1"].Status)
+	}
+}
+
+func TestApplyEvent_WithParentID_AttachesChildToParent(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "parent", Status: StatusRunning})
+
+	// A new session arrives with parent_session_id pointing to "parent".
+	tree.ApplyEvent(Event{
+		Type:      "PreToolUse",
+		SessionID: "child",
+		ParentID:  "parent",
+		Tool:      "Bash",
+		Timestamp: time.Now(),
+	})
+
+	child := tree.Nodes["child"]
+	if child == nil {
+		t.Fatal("expected child node to be created")
+	}
+	if child.ParentID != "parent" {
+		t.Errorf("expected child.ParentID = 'parent', got %q", child.ParentID)
+	}
+
+	// Child must not appear in Roots.
+	for _, r := range tree.Roots {
+		if r == "child" {
+			t.Error("child node should not be in Roots when parent exists")
+		}
+	}
+
+	// Parent's Children slice must include the child.
+	parent := tree.Nodes["parent"]
+	if len(parent.Children) != 1 || parent.Children[0] != "child" {
+		t.Errorf("expected parent.Children = [child], got %v", parent.Children)
+	}
+}
+
+func TestApplyEvent_WithParentID_ParentNotYetInTree_SurfacesAsRoot(t *testing.T) {
+	tree := NewTree()
+
+	// Child event arrives before any parent event.
+	tree.ApplyEvent(Event{
+		Type:      "PreToolUse",
+		SessionID: "child",
+		ParentID:  "unknown-parent",
+		Tool:      "Bash",
+		Timestamp: time.Now(),
+	})
+
+	child := tree.Nodes["child"]
+	if child == nil {
+		t.Fatal("expected child node to be created")
+	}
+	// Should be visible as a root rather than disappearing.
+	found := false
+	for _, r := range tree.Roots {
+		if r == "child" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected orphaned child to appear in Roots")
 	}
 }
 
@@ -256,6 +320,138 @@ func TestApplyEvent_ErrorOnNewNode(t *testing.T) {
 	}
 	if node.ErrorMsg != "tool panicked" {
 		t.Errorf("expected ErrorMsg 'tool panicked', got %q", node.ErrorMsg)
+	}
+}
+
+func TestApplyEvent_AgentTool_CreatesChildNodeImmediately(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "parent", Status: StatusRunning})
+
+	tree.ApplyEvent(Event{
+		Type:      "PreToolUse",
+		SessionID: "parent",
+		Tool:      "Agent",
+		ToolUseID: "toolu_001",
+		Input:     `{"subagent_type":"Explore","prompt":"find stuff"}`,
+		Timestamp: time.Now(),
+	})
+
+	// Child node should be created immediately using tool_use_id as its ID.
+	child := tree.Nodes["toolu_001"]
+	if child == nil {
+		t.Fatal("expected child node to be created immediately on PreToolUse[Agent]")
+	}
+	if child.Name != "Explore" {
+		t.Errorf("expected child Name 'Explore', got %q", child.Name)
+	}
+	if child.Status != StatusRunning {
+		t.Errorf("expected child StatusRunning, got %d", child.Status)
+	}
+	if child.ParentID != "parent" {
+		t.Errorf("expected child ParentID 'parent', got %q", child.ParentID)
+	}
+
+	// Child must appear in parent's Children slice.
+	parent := tree.Nodes["parent"]
+	if len(parent.Children) != 1 || parent.Children[0] != "toolu_001" {
+		t.Errorf("expected parent.Children = [toolu_001], got %v", parent.Children)
+	}
+}
+
+func TestApplyEvent_AgentTool_MultipleChildrenParallel(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "parent", Status: StatusRunning})
+
+	tree.ApplyEvent(Event{
+		Type: "PreToolUse", SessionID: "parent", Tool: "Agent",
+		ToolUseID: "toolu_A", Input: `{"subagent_type":"Explore"}`,
+		Timestamp: time.Now(),
+	})
+	tree.ApplyEvent(Event{
+		Type: "PreToolUse", SessionID: "parent", Tool: "Agent",
+		ToolUseID: "toolu_B", Input: `{"subagent_type":"Plan"}`,
+		Timestamp: time.Now(),
+	})
+
+	if tree.Nodes["toolu_A"] == nil || tree.Nodes["toolu_A"].Name != "Explore" {
+		t.Errorf("expected toolu_A named 'Explore', got %+v", tree.Nodes["toolu_A"])
+	}
+	if tree.Nodes["toolu_B"] == nil || tree.Nodes["toolu_B"].Name != "Plan" {
+		t.Errorf("expected toolu_B named 'Plan', got %+v", tree.Nodes["toolu_B"])
+	}
+
+	parent := tree.Nodes["parent"]
+	if len(parent.Children) != 2 {
+		t.Errorf("expected 2 children, got %d", len(parent.Children))
+	}
+}
+
+func TestApplyEvent_AgentTool_NoSubagentType_FallsBackToAgentName(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "parent", Status: StatusRunning})
+
+	tree.ApplyEvent(Event{
+		Type:      "PreToolUse",
+		SessionID: "parent",
+		Tool:      "Agent",
+		ToolUseID: "toolu_X",
+		Input:     `{"prompt":"do something"}`,
+		Timestamp: time.Now(),
+	})
+
+	child := tree.Nodes["toolu_X"]
+	if child == nil {
+		t.Fatal("expected child node even without subagent_type")
+	}
+	if child.Name != "agent" {
+		t.Errorf("expected fallback name 'agent', got %q", child.Name)
+	}
+}
+
+func TestApplyEvent_AgentTool_NoToolUseID_NoChildCreated(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "parent", Status: StatusRunning})
+
+	// Agent call without a tool_use_id — should not crash or create orphan node.
+	tree.ApplyEvent(Event{
+		Type:      "PreToolUse",
+		SessionID: "parent",
+		Tool:      "Agent",
+		ToolUseID: "",
+		Input:     `{"subagent_type":"Explore"}`,
+		Timestamp: time.Now(),
+	})
+
+	parent := tree.Nodes["parent"]
+	if len(parent.Children) != 0 {
+		t.Errorf("expected no children when tool_use_id is empty, got %d", len(parent.Children))
+	}
+}
+
+func TestApplyEvent_Stop_MarksRunningChildrenDone(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "parent", Status: StatusRunning})
+
+	// Two subagents spawned.
+	tree.ApplyEvent(Event{
+		Type: "PreToolUse", SessionID: "parent", Tool: "Agent",
+		ToolUseID: "toolu_1", Input: `{"subagent_type":"Explore"}`,
+		Timestamp: time.Now(),
+	})
+	tree.ApplyEvent(Event{
+		Type: "PreToolUse", SessionID: "parent", Tool: "Agent",
+		ToolUseID: "toolu_2", Input: `{"subagent_type":"Plan"}`,
+		Timestamp: time.Now(),
+	})
+
+	// Turn ends.
+	tree.ApplyEvent(Event{Type: "Stop", SessionID: "parent", Timestamp: time.Now()})
+
+	if tree.Nodes["toolu_1"].Status != StatusDone {
+		t.Errorf("expected toolu_1 StatusDone after parent Stop, got %d", tree.Nodes["toolu_1"].Status)
+	}
+	if tree.Nodes["toolu_2"].Status != StatusDone {
+		t.Errorf("expected toolu_2 StatusDone after parent Stop, got %d", tree.Nodes["toolu_2"].Status)
 	}
 }
 

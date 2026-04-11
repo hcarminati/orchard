@@ -283,7 +283,11 @@ func (m *Model) clampEventScroll() {
 		m.eventScroll = 0
 		return
 	}
-	viewH := max(1, m.height-footerHeight-2)
+	headerH := 0
+	if node.ParentID != "" {
+		headerH = 3
+	}
+	viewH := max(1, m.height-footerHeight-2-headerH)
 	totalLines := 0
 	for i := range node.Events {
 		totalLines += m.linesForEvent(node, i)
@@ -320,7 +324,11 @@ func (m *Model) scrollToCursor() {
 		return
 	}
 	m.eventCursor = max(0, min(m.eventCursor, len(node.Events)-1))
-	viewH := max(1, m.height-footerHeight-2)
+	headerH := 0
+	if node.ParentID != "" {
+		headerH = 3
+	}
+	viewH := max(1, m.height-footerHeight-2-headerH)
 	firstLine := 0
 	for i := 0; i < m.eventCursor; i++ {
 		firstLine += m.linesForEvent(node, i)
@@ -541,17 +549,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else if msg.X >= leftW && rightTabs[m.activeRightTab] == tabEvents {
 				// Right panel content area: move event cursor to clicked row.
 				const contentTop = 1
-				lineOffset := msg.Y - contentTop + m.eventScroll
-				if node := m.focusedNode(); node != nil && lineOffset >= 0 {
-					if idx, ok := m.eventAtLine(node, lineOffset); ok {
-						m.activePanel = panelEvents
-						if idx == m.eventCursor && isToolEvent(node.Events[idx]) {
-							// Clicking the already-selected tool event toggles expansion.
-							key := eventKey(node.ID, idx)
-							m.expandedEvents[key] = !m.expandedEvents[key]
+				if node := m.focusedNode(); node != nil {
+					headerH := 0
+					if node.ParentID != "" {
+						headerH = 3
+					}
+					lineOffset := msg.Y - contentTop - headerH + m.eventScroll
+					if lineOffset >= 0 {
+						if idx, ok := m.eventAtLine(node, lineOffset); ok {
+							m.activePanel = panelEvents
+							if idx == m.eventCursor && isToolEvent(node.Events[idx]) {
+								// Clicking the already-selected tool event toggles expansion.
+								key := eventKey(node.ID, idx)
+								m.expandedEvents[key] = !m.expandedEvents[key]
+							}
+							m.eventCursor = idx
+							m.scrollToCursor()
 						}
-						m.eventCursor = idx
-						m.scrollToCursor()
 					}
 				}
 			}

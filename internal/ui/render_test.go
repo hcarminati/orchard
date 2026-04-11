@@ -211,6 +211,102 @@ func TestView_CollapsedNode_HidesChildrenFromView(t *testing.T) {
 	}
 }
 
+func TestEventsPanel_SpawnContextHeader_ShownForChildNode(t *testing.T) {
+	parent := agent.Node{ID: "parent-abc123", Name: "session:parent-a", Status: agent.StatusDone}
+	child := agent.Node{
+		ID:       "child-xyz",
+		ParentID: "parent-abc123",
+		Name:     "Explore",
+		Prompt:   "find all Go files",
+		Status:   agent.StatusDone,
+	}
+	m := New([]agent.Node{parent, child}, nil)
+	// Navigate to child node (cursor=1 after parent).
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	view := next.(Model).View()
+
+	if !strings.Contains(view, "Spawned by") {
+		t.Errorf("expected 'Spawned by' header for child node, got:\n%s", view)
+	}
+	if !strings.Contains(view, "session:parent-a") {
+		t.Errorf("expected parent session label in header, got:\n%s", view)
+	}
+	if !strings.Contains(view, "find all Go files") {
+		t.Errorf("expected prompt text in header, got:\n%s", view)
+	}
+}
+
+func TestEventsPanel_SpawnContextHeader_NotShownForParentNode(t *testing.T) {
+	parent := agent.Node{ID: "parent-abc123", Name: "session:parent-a", Status: agent.StatusDone}
+	m := New([]agent.Node{parent}, nil)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	view := next.(Model).View()
+
+	if strings.Contains(view, "Spawned by") {
+		t.Errorf("expected no 'Spawned by' header for root node, got:\n%s", view)
+	}
+}
+
+func TestEventsPanel_SpawnContextHeader_TruncatesLongPrompt(t *testing.T) {
+	parent := agent.Node{ID: "parent-aabbccdd", Name: "session:parent-a", Status: agent.StatusDone}
+	child := agent.Node{
+		ID:       "child-xyz",
+		ParentID: "parent-aabbccdd",
+		Name:     "Explore",
+		Prompt:   strings.Repeat("a", 100),
+		Status:   agent.StatusDone,
+	}
+	m := New([]agent.Node{parent, child}, nil)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	view := next.(Model).View()
+
+	if !strings.Contains(view, "…") {
+		t.Errorf("expected long prompt to be truncated with ellipsis, got:\n%s", view)
+	}
+}
+
+func TestView_ChildNode_ShowsConnector(t *testing.T) {
+	m := makeTree()
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	view := next.(Model).View()
+
+	// Child nodes (agent-B, agent-C) should be preceded by the └─ connector.
+	if !strings.Contains(view, "└─") {
+		t.Errorf("expected └─ connector for child nodes in view, got:\n%s", view)
+	}
+}
+
+func TestView_AgentToolCall_ChildNamedAfterSubagentType(t *testing.T) {
+	ch := make(chan agent.Event, 10)
+	m := New(nil, ch)
+
+	// Parent session appears.
+	next, _ := m.Update(hookEventMsg{event: agent.Event{
+		Type: "PreToolUse", SessionID: "parent-sess", Tool: "Bash",
+		Timestamp: time.Now(),
+	}})
+	// Parent fires an Agent tool call — child node should appear immediately.
+	next, _ = next.Update(hookEventMsg{event: agent.Event{
+		Type:      "PreToolUse",
+		SessionID: "parent-sess",
+		Tool:      "Agent",
+		ToolUseID: "toolu_test_001",
+		Input:     `{"subagent_type":"Explore","prompt":"find files"}`,
+		Timestamp: time.Now(),
+	}})
+	next, _ = next.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+
+	view := next.(Model).View()
+	if !strings.Contains(view, "Explore") {
+		t.Errorf("expected child node to be named 'Explore' in view, got:\n%s", view)
+	}
+	if !strings.Contains(view, "└─") {
+		t.Errorf("expected └─ connector for child node in view, got:\n%s", view)
+	}
+}
+
 // --- Footer hints ---
 
 func TestFooter_SpaceHint_OnlyWhenCursorOnNodeWithChildren(t *testing.T) {

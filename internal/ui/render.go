@@ -204,6 +204,8 @@ func (m Model) agentsContent() string {
 	}
 	visible := vn[start:end]
 
+	cursor := lipgloss.NewStyle().Foreground(colorAccent).Render(">")
+
 	var lines []string
 
 	for i, entry := range visible {
@@ -224,7 +226,7 @@ func (m Model) agentsContent() string {
 			}
 			prefix := "  "
 			if focused {
-				prefix = "> "
+				prefix = cursor + " "
 			}
 			lines = append(lines, truncate(prefix+icon+lipgloss.NewStyle().Foreground(colorMuted).Render(
 				fmt.Sprintf("parallel × %d", count),
@@ -237,7 +239,6 @@ func (m Model) agentsContent() string {
 			continue
 		}
 
-		indent := strings.Repeat("  ", entry.depth)
 		icon := expandIcon(entry.id, len(n.Children) > 0)
 
 		// Group members get an extra visual indent level under the header.
@@ -251,7 +252,7 @@ func (m Model) agentsContent() string {
 			}
 			prefix := "    "
 			if focused {
-				prefix = "  > "
+				prefix = "  " + cursor + " "
 			}
 			indicator := ""
 			if n.Winner {
@@ -269,11 +270,25 @@ func (m Model) agentsContent() string {
 		}
 
 		// Ungrouped root node or any child node.
-		prefix := indent + "  "
-		if focused {
-			prefix = indent + "> "
+		var prefix string
+		connector := ""
+		if entry.depth > 0 {
+			// Child nodes: show └─ connector preceded by parent-level indent.
+			connector = "└─ "
+			base := strings.Repeat("  ", entry.depth-1)
+			if focused {
+				prefix = base + cursor + " "
+			} else {
+				prefix = base + "  "
+			}
+		} else {
+			if focused {
+				prefix = cursor + " "
+			} else {
+				prefix = "  "
+			}
 		}
-		line := prefix + icon + dot(statusColor(n.Status)) + " " + n.Name
+		line := prefix + connector + icon + dot(statusColor(n.Status)) + " " + n.Name
 		if n.Status == agent.StatusError && n.ErrorMsg != "" {
 			line += " " + lipgloss.NewStyle().Foreground(colorRed).Render("✗ "+n.ErrorMsg)
 		}
@@ -302,12 +317,44 @@ func (m Model) eventsContent() string {
 		return muted.Render("Focus an agent to view its event log.")
 	}
 
-	if len(node.Events) == 0 {
-		return muted.Render("No events yet.")
-	}
-
 	innerW := m.innerWidth()
 	viewH := max(1, m.height-footerHeight-2)
+
+	// Spawn context header — only for child subagent nodes.
+	var headerLines []string
+	if node.ParentID != "" {
+		parentLabel := "session:" + node.ParentID
+		if len(node.ParentID) > 8 {
+			parentLabel = "session:" + node.ParentID[:8]
+		}
+		spawnLine := "Spawned by " + parentLabel
+		if !node.SpawnedAt.IsZero() {
+			spawnLine += "  at " + node.SpawnedAt.Format("Jan 02 15:04:05")
+		}
+
+		prompt := node.Prompt
+		if len([]rune(prompt)) > 80 {
+			prompt = string([]rune(prompt)[:80]) + "…"
+		}
+		promptLine := "Prompt: " + prompt
+
+		divider := strings.Repeat("─", min(innerW, 48))
+
+		mStyle := lipgloss.NewStyle().Foreground(colorMuted)
+		headerLines = []string{
+			mStyle.Render(spawnLine),
+			mStyle.Render(promptLine),
+			mStyle.Render(divider),
+		}
+	}
+
+	if len(node.Events) == 0 {
+		noEvents := muted.Render("No events yet.")
+		if len(headerLines) > 0 {
+			return strings.Join(headerLines, "\n") + "\n" + noEvents
+		}
+		return noEvents
+	}
 
 	tsStyle := lipgloss.NewStyle().Foreground(colorMuted)
 	toolStyle := lipgloss.NewStyle().Foreground(colorAccent)
@@ -384,10 +431,16 @@ func (m Model) eventsContent() string {
 		}
 	}
 
-	maxStart := max(0, len(allLines)-viewH)
+	// Reserve space for the header so event scrolling doesn't overlap it.
+	eventsViewH := max(1, viewH-len(headerLines))
+	maxStart := max(0, len(allLines)-eventsViewH)
 	start := min(m.eventScroll, maxStart)
-	end := min(start+viewH, len(allLines))
-	return strings.Join(allLines[start:end], "\n")
+	end := min(start+eventsViewH, len(allLines))
+	eventSection := strings.Join(allLines[start:end], "\n")
+	if len(headerLines) > 0 {
+		return strings.Join(headerLines, "\n") + "\n" + eventSection
+	}
+	return eventSection
 }
 
 // inputPreview returns a short (≤20 rune) summary of a JSON tool input for
