@@ -120,6 +120,14 @@ type Tree struct {
 	sessionAlias map[string]string
 }
 
+// SessionAlias returns the placeholder node ID that realSessionID was aliased to,
+// if such an alias exists. Used by the TUI to resolve a live session ID to the
+// node that holds its events.
+func (t *Tree) SessionAlias(realSessionID string) (string, bool) {
+	id, ok := t.sessionAlias[realSessionID]
+	return id, ok
+}
+
 // NewTree returns an empty, ready-to-use Tree.
 func NewTree() Tree {
 	return Tree{

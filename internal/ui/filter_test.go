@@ -3,6 +3,7 @@ package ui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -10,7 +11,7 @@ import (
 )
 
 func TestUpdate_FilterCyclesMode(t *testing.T) {
-	m := New(nil, nil, nil)
+	m := newWithClock(nil, nil, nil, time.Time{})
 	if m.statusFilter != filterAll {
 		t.Fatalf("expected initial filter to be filterAll, got %d", m.statusFilter)
 	}
@@ -46,7 +47,7 @@ func TestUpdate_FilterResetsCursorToZero(t *testing.T) {
 		{ID: "b", Name: "agent-b", Status: agent.StatusRunning},
 		{ID: "c", Name: "agent-c", Status: agent.StatusRunning},
 	}
-	m := New(nodes, nil, nil)
+	m := newWithClock(nodes, nil, nil, time.Time{})
 
 	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
@@ -67,7 +68,7 @@ func TestFilter_RunningHidesNonRunningNodes(t *testing.T) {
 		{ID: "c", Name: "agent-c", Status: agent.StatusError},
 		{ID: "d", Name: "agent-d", Status: agent.StatusRunning},
 	}
-	m := New(nodes, nil, nil)
+	m := newWithClock(nodes, nil, nil, time.Time{})
 	m.statusFilter = filterRunning
 
 	vn := m.visibleNodes()
@@ -91,7 +92,7 @@ func TestFilter_ErroredHidesNonErroredNodes(t *testing.T) {
 		{ID: "b", Name: "agent-b", Status: agent.StatusError},
 		{ID: "c", Name: "agent-c", Status: agent.StatusIdle},
 	}
-	m := New(nodes, nil, nil)
+	m := newWithClock(nodes, nil, nil, time.Time{})
 	m.statusFilter = filterErrored
 
 	vn := m.visibleNodes()
@@ -110,7 +111,7 @@ func TestFilter_AllShowsEveryNode(t *testing.T) {
 		{ID: "c", Status: agent.StatusDone},
 		{ID: "d", Status: agent.StatusError},
 	}
-	m := New(nodes, nil, nil)
+	m := newWithClock(nodes, nil, nil, time.Time{})
 	m.statusFilter = filterAll
 
 	vn := m.visibleNodes()
@@ -124,7 +125,7 @@ func TestFilter_HiddenNodesAbsentFromView(t *testing.T) {
 		{ID: "a", Name: "running-agent", Status: agent.StatusRunning},
 		{ID: "b", Name: "idle-agent", Status: agent.StatusIdle},
 	}
-	m := New(nodes, nil, nil)
+	m := newWithClock(nodes, nil, nil, time.Time{})
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
 	view := next.(Model).View()
@@ -138,7 +139,7 @@ func TestFilter_HiddenNodesAbsentFromView(t *testing.T) {
 }
 
 func TestFilter_FooterShowsCurrentMode(t *testing.T) {
-	m := New(nil, nil, nil)
+	m := newWithClock(nil, nil, nil, time.Time{})
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 
 	view := next.(Model).View()
@@ -169,7 +170,7 @@ func TestHide_ConfirmPromptAppearsOnD(t *testing.T) {
 	nodes := []agent.Node{
 		{ID: "sess-abc123", Name: "session:sessabc1", Status: agent.StatusDone},
 	}
-	m := New(nodes, nil, nil)
+	m := newWithClock(nodes, nil, nil, time.Time{})
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = next.(Model)
 
@@ -189,7 +190,7 @@ func TestHide_YConfirmsHide(t *testing.T) {
 	nodes := []agent.Node{
 		{ID: "sess-abc123", Name: "session:sessabc1", Status: agent.StatusDone},
 	}
-	m := New(nodes, nil, nil)
+	m := newWithClock(nodes, nil, nil, time.Time{})
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = next.(Model)
 
@@ -216,7 +217,7 @@ func TestHide_NonYCancels(t *testing.T) {
 	nodes := []agent.Node{
 		{ID: "sess-abc123", Name: "session:sessabc1", Status: agent.StatusDone},
 	}
-	m := New(nodes, nil, nil)
+	m := newWithClock(nodes, nil, nil, time.Time{})
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = next.(Model)
 
@@ -237,7 +238,7 @@ func TestHide_RunningSessionShowsStatusMsg(t *testing.T) {
 	nodes := []agent.Node{
 		{ID: "sess-run", Name: "session:sess-run", Status: agent.StatusRunning},
 	}
-	m := New(nodes, nil, nil)
+	m := newWithClock(nodes, nil, nil, time.Time{})
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = next.(Model)
 
@@ -261,7 +262,7 @@ func TestHide_RestoreViaR(t *testing.T) {
 		{ID: "sess-abc123", Name: "session:sessabc1", Status: agent.StatusDone},
 	}
 	hidden := map[string]bool{"sess-abc123": true}
-	m := New(nodes, nil, hidden)
+	m := newWithClock(nodes, nil, hidden, time.Time{})
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = next.(Model)
 
@@ -294,7 +295,7 @@ func TestHide_ChildNodeCannotBeHidden(t *testing.T) {
 		{ID: "parent", Name: "session:parent", Status: agent.StatusDone},
 		{ID: "child", Name: "child-agent", ParentID: "parent", Status: agent.StatusDone},
 	}
-	m := New(nodes, nil, nil)
+	m := newWithClock(nodes, nil, nil, time.Time{})
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = next.(Model)
 

@@ -150,6 +150,7 @@ type Model struct {
 	hiddenSessions  map[string]bool        // session IDs hidden from the agent list; persisted to hidden.json
 	confirmHide     string                 // non-empty: session ID awaiting hide confirmation
 	hideStatusMsg   string                 // transient one-line status (e.g. "Cannot hide active session")
+	pendingSave     bool                   // true when hiddenSessions was mutated before Init() ran (auto-hide at startup)
 }
 
 // New creates a Model initialized with session data and a hook event channel.
@@ -158,7 +159,17 @@ type Model struct {
 // eventCh delivers incoming hook events from the embedded HTTP server; pass nil
 // to run without live updates (useful in tests).
 // hiddenIDs is the set of session IDs loaded from hidden.json; pass nil for none.
+// autoHideAge is how long a session must be inactive before it is automatically
+// hidden from the agent list on startup.
+const autoHideAge = 7 * 24 * time.Hour
+
 func New(nodes []agent.Node, eventCh <-chan agent.Event, hiddenIDs map[string]bool) Model {
+	return newWithClock(nodes, eventCh, hiddenIDs, time.Now())
+}
+
+// newWithClock is the testable core of New. now is used as the reference time
+// for the auto-hide age check; pass time.Time{} to disable auto-hide entirely.
+func newWithClock(nodes []agent.Node, eventCh <-chan agent.Event, hiddenIDs map[string]bool, now time.Time) Model {
 	tree := agent.NewTree()
 	for _, n := range nodes {
 		tree.AddNode(n)
@@ -166,6 +177,47 @@ func New(nodes []agent.Node, eventCh <-chan agent.Event, hiddenIDs map[string]bo
 	if hiddenIDs == nil {
 		hiddenIDs = make(map[string]bool)
 	}
+
+	// Auto-hide root sessions that have had no activity in the past week.
+	// Only sessions with at least one event are considered; sessions with no
+	// events are new/unknown and should remain visible.
+	// If now is zero, auto-hide is disabled (used in tests).
+	pendingSave := false
+	if !now.IsZero() {
+		cutoff := now.Add(-autoHideAge)
+		for _, id := range tree.Roots {
+			if hiddenIDs[id] {
+				continue
+			}
+			node := tree.Nodes[id]
+			if node == nil || len(node.Events) == 0 {
+				continue
+			}
+			// Walk the subtree to find the most recent event across all descendants.
+			var latest time.Time
+			var walkLatest func(string)
+			walkLatest = func(nodeID string) {
+				n := tree.Nodes[nodeID]
+				if n == nil {
+					return
+				}
+				if len(n.Events) > 0 {
+					if t := n.Events[len(n.Events)-1].Timestamp; t.After(latest) {
+						latest = t
+					}
+				}
+				for _, child := range n.Children {
+					walkLatest(child)
+				}
+			}
+			walkLatest(id)
+			if !latest.IsZero() && latest.Before(cutoff) {
+				hiddenIDs[id] = true
+				pendingSave = true
+			}
+		}
+	}
+
 	return Model{
 		activePanel:     panelAgents,
 		agents:          tree,
@@ -179,6 +231,7 @@ func New(nodes []agent.Node, eventCh <-chan agent.Event, hiddenIDs map[string]bo
 		statusFilter:    filterAll,
 		eventScroll:     math.MaxInt, // will be clamped to real max on first render
 		hiddenSessions:  hiddenIDs,
+		pendingSave:     pendingSave,
 	}
 }
 
@@ -482,12 +535,17 @@ func scheduleDone(sessionID string, gen int) tea.Cmd {
 }
 
 // Init is called once when the program starts.
-// If an event channel is present, it kicks off the first waitForEvent listener.
+// Kicks off the hook event listener and, if sessions were auto-hidden at
+// startup, persists the updated hidden list to disk.
 func (m Model) Init() tea.Cmd {
-	if m.eventCh == nil {
-		return nil
+	var cmds []tea.Cmd
+	if m.eventCh != nil {
+		cmds = append(cmds, waitForEvent(m.eventCh))
 	}
-	return waitForEvent(m.eventCh)
+	if m.pendingSave {
+		cmds = append(cmds, saveHidden(m.hiddenSessions))
+	}
+	return tea.Batch(cmds...)
 }
 
 // Update is the heart of Bubbletea. Every time something happens — a keypress,
@@ -799,7 +857,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if n := m.focusedNode(); n != nil && n.ID == e.SessionID {
 			m.scrollEventToBottom()
 		}
+		// Auto-unhide: if a live event arrives for a hidden session, restore it
+		// so the user can see the newly active agent without having to unhide manually.
+		// Use the aliased node ID (in case this session was matched to a placeholder).
+		unhideID := e.SessionID
+		if alias, ok := m.agents.SessionAlias(e.SessionID); ok {
+			unhideID = alias
+		}
 		cmd := waitForEvent(m.eventCh)
+		if m.hiddenSessions[unhideID] {
+			delete(m.hiddenSessions, unhideID)
+			cmd = tea.Batch(cmd, saveHidden(m.hiddenSessions))
+		}
 		switch e.Type {
 		case "PostToolUse":
 			// Schedule an idle transition after the tool completes.

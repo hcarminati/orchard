@@ -13,7 +13,7 @@ import (
 // newModel returns a Model with no session data and no event channel,
 // suitable for tests that only exercise layout and keyboard handling.
 func newModel() Model {
-	return New(nil, nil, nil)
+	return newWithClock(nil, nil, nil, time.Time{})
 }
 
 // makeTree creates a Model with a simple parent-child tree:
@@ -27,7 +27,7 @@ func makeTree() Model {
 		{ID: "C", Name: "agent-C", ParentID: "A", Status: agent.StatusRunning},
 		{ID: "D", Name: "agent-D", Status: agent.StatusRunning},
 	}
-	return New(nodes, nil, nil)
+	return newWithClock(nodes, nil, nil, time.Time{})
 }
 
 // makeNodeWithEvents returns an agent.Node with n synthetic events.
@@ -114,7 +114,7 @@ func TestNew_WithNodes_SetsHasSession(t *testing.T) {
 	nodes := []agent.Node{
 		{ID: "s1", Name: "session:s1", Status: agent.StatusDone},
 	}
-	m := New(nodes, nil, nil)
+	m := newWithClock(nodes, nil, nil, time.Time{})
 	if !m.hasSession {
 		t.Error("expected hasSession=true when nodes are provided")
 	}
@@ -124,7 +124,7 @@ func TestNew_WithNodes_SetsHasSession(t *testing.T) {
 }
 
 func TestNew_NoNodes_HasSessionFalse(t *testing.T) {
-	m := New(nil, nil, nil)
+	m := newWithClock(nil, nil, nil, time.Time{})
 	if m.hasSession {
 		t.Error("expected hasSession=false when no nodes provided")
 	}
@@ -155,7 +155,7 @@ func TestUpdate_HookEventMsg_PopulatesTree(t *testing.T) {
 
 func TestUpdate_HookEventMsg_ReturnsWaitCmd(t *testing.T) {
 	ch := make(chan agent.Event, 1)
-	m := New(nil, ch, nil)
+	m := newWithClock(nil, ch, nil, time.Time{})
 
 	e := agent.Event{Type: "Stop", SessionID: "s1", Timestamp: time.Now()}
 	_, cmd := m.Update(hookEventMsg{event: e})
@@ -167,7 +167,7 @@ func TestUpdate_HookEventMsg_ReturnsWaitCmd(t *testing.T) {
 
 func TestUpdate_MultipleHookEvents_AccumulateInTree(t *testing.T) {
 	ch := make(chan agent.Event, 10)
-	m := New(nil, ch, nil)
+	m := newWithClock(nil, ch, nil, time.Time{})
 
 	events := []agent.Event{
 		{Type: "PreToolUse", SessionID: "s1", Tool: "Bash", Timestamp: time.Now()},
@@ -204,7 +204,7 @@ func TestView_ShowsAgentCount_WhenSessionLoaded(t *testing.T) {
 		{ID: "a", Name: "session:aaaaaaaa", Status: agent.StatusDone},
 		{ID: "b", Name: "session:bbbbbbbb", Status: agent.StatusRunning},
 	}
-	m := New(nodes, nil, nil)
+	m := newWithClock(nodes, nil, nil, time.Time{})
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	view := next.(Model).View()
 
@@ -214,7 +214,7 @@ func TestView_ShowsAgentCount_WhenSessionLoaded(t *testing.T) {
 }
 
 func TestInit_NilChannel_ReturnsNilCmd(t *testing.T) {
-	m := New(nil, nil, nil)
+	m := newWithClock(nil, nil, nil, time.Time{})
 	cmd := m.Init()
 	if cmd != nil {
 		t.Error("expected nil Cmd from Init when eventCh is nil")
@@ -223,7 +223,7 @@ func TestInit_NilChannel_ReturnsNilCmd(t *testing.T) {
 
 func TestInit_WithChannel_ReturnsNonNilCmd(t *testing.T) {
 	ch := make(chan agent.Event, 1)
-	m := New(nil, ch, nil)
+	m := newWithClock(nil, ch, nil, time.Time{})
 	cmd := m.Init()
 	if cmd == nil {
 		t.Error("expected non-nil Cmd from Init when eventCh is set")
@@ -234,7 +234,7 @@ func TestInit_WithChannel_ReturnsNonNilCmd(t *testing.T) {
 
 func TestIdleTimeout_PostToolUse_SchedulesTimer(t *testing.T) {
 	ch := make(chan agent.Event, 1)
-	m := New(nil, ch, nil)
+	m := newWithClock(nil, ch, nil, time.Time{})
 
 	_, cmd := m.Update(hookEventMsg{event: agent.Event{
 		Type: "PostToolUse", SessionID: "s1", Timestamp: time.Now(),
