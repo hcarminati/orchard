@@ -429,7 +429,7 @@ func (m Model) eventsContent() string {
 				allLines = append(allLines, header)
 			} else if isToolEvent(e) && e.Input != "" {
 				// Collapsed tool event: short input preview (≤20 chars) appended to header.
-				preview := "  " + inputPreview(e.Input)
+				preview := "  " + inputPreview(e.Input, home)
 				full := header + preview
 				if lipgloss.Width(full) > innerW {
 					full = lipgloss.NewStyle().MaxWidth(innerW-1).Render(full) + "…"
@@ -492,8 +492,15 @@ func (m Model) eventsContent() string {
 }
 
 // inputPreview returns a short (≤20 rune) summary of a JSON tool input for
-// the collapsed event row. It extracts the most informative string value.
-func inputPreview(input string) string {
+// the collapsed event row. It extracts the most informative string value and
+// replaces the home directory prefix with ~.
+func inputPreview(input, home string) string {
+	tilde := func(s string) string {
+		if home != "" && strings.HasPrefix(s, home) {
+			return "~" + s[len(home):]
+		}
+		return s
+	}
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(input), &obj); err != nil {
 		return truncRunes(strings.ReplaceAll(input, "\n", " "), 20)
@@ -506,7 +513,7 @@ func inputPreview(input string) string {
 		}
 		var s string
 		if err := json.Unmarshal(raw, &s); err == nil {
-			return truncRunes(strings.ReplaceAll(s, "\n", " "), 20)
+			return truncRunes(strings.ReplaceAll(tilde(s), "\n", " "), 20)
 		}
 	}
 	// Fall back to first string value in sorted key order.
@@ -518,7 +525,7 @@ func inputPreview(input string) string {
 	for _, k := range keys {
 		var s string
 		if err := json.Unmarshal(obj[k], &s); err == nil {
-			return truncRunes(strings.ReplaceAll(s, "\n", " "), 20)
+			return truncRunes(strings.ReplaceAll(tilde(s), "\n", " "), 20)
 		}
 	}
 	return fmt.Sprintf("{%d fields}", len(obj))
@@ -563,6 +570,9 @@ func permissionPreview(tool, input, home string) string {
 		}
 	case "Write":
 		if s, ok := getString("file_path"); ok {
+			if home != "" && strings.HasPrefix(s, home) {
+				s = "~" + s[len(home):]
+			}
 			return truncRunes(s, 40)
 		}
 	}

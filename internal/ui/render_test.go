@@ -341,11 +341,10 @@ func TestPermissionPreview_Edit_ExtractsFilePathWithTilde(t *testing.T) {
 	}
 }
 
-func TestPermissionPreview_Write_ExtractsFilePathRaw(t *testing.T) {
-	got := permissionPreview("Write", `{"file_path":"/tmp/out.go","content":"x"}`, "/tmp")
-	// Write does not apply ~ replacement.
-	if got != "/tmp/out.go" {
-		t.Errorf("expected '/tmp/out.go' without ~ replacement, got %q", got)
+func TestPermissionPreview_Write_ExtractsFilePathWithTilde(t *testing.T) {
+	got := permissionPreview("Write", `{"file_path":"/home/user/out.go","content":"x"}`, "/home/user")
+	if got != "~/out.go" {
+		t.Errorf("expected '~/out.go', got %q", got)
 	}
 }
 
