@@ -6,6 +6,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 
@@ -415,28 +416,16 @@ func (m Model) eventsContent() string {
 
 		warningStyle := lipgloss.NewStyle().Foreground(colorYellow)
 		ts := tsStyle.Render(e.Timestamp.Format("Jan 02 15:04:05"))
-
-		// Event type label: Notification is bright, Stop/SubagentStop dimmed, rest muted.
-		var typeColor lipgloss.Color
-		switch e.Type {
-		case "Notification":
-			typeColor = colorFg
-		case "Stop", "SubagentStop":
-			typeColor = colorMuted
-		default:
-			typeColor = colorMuted
-		}
-		header := prefix + ts + "  " + lipgloss.NewStyle().Foreground(typeColor).Render(e.Type)
+		header := prefix + ts + "  " + mutedStyle.Render(e.Type)
 
 		switch e.Type {
 		case "Notification":
 			if expanded {
 				header += "  " + mutedStyle.Render("▼")
 			} else {
-				header += "  " + mutedStyle.Render("►")
 				if e.Message != "" {
 					msg := truncRunes(strings.ReplaceAll(e.Message, "\n", " "), 40)
-					header += "  " + mutedStyle.Render(msg)
+					header += "  " + mutedStyle.Render("►") + "  " + mutedStyle.Render(msg)
 				}
 			}
 		case "PermissionRequest":
@@ -459,7 +448,6 @@ func (m Model) eventsContent() string {
 				if expanded {
 					header += "  " + mutedStyle.Render("▼")
 				} else if hasPendingPermission(idx) {
-					// PermissionRequest for this tool call is absorbed into this row.
 					header += "  " + warningStyle.Render("⚠")
 				} else {
 					header += "  " + mutedStyle.Render("▶")
@@ -468,20 +456,16 @@ func (m Model) eventsContent() string {
 		}
 
 		if !expanded {
-			if e.Type == "PermissionRequest" {
-				// PermissionRequest collapsed: ⚠  Tool  ►  {tool-specific preview}
-				if e.Input != "" {
-					preview := permissionPreview(e.Tool, e.Input, home)
-					if preview != "" {
-						header += "  " + mutedStyle.Render("►") + "  " + mutedStyle.Render(preview)
-					}
+			if e.Type == "PermissionRequest" && e.Input != "" {
+				preview := permissionPreview(e.Tool, e.Input, home)
+				if preview != "" {
+					header += "  " + mutedStyle.Render("►") + "  " + mutedStyle.Render(preview)
 				}
 				if lipgloss.Width(header) > innerW {
 					header = lipgloss.NewStyle().MaxWidth(innerW-1).Render(header) + "…"
 				}
 				allLines = append(allLines, header)
 			} else if isToolEvent(e) && e.Input != "" {
-				// Collapsed tool event: short input preview (≤20 chars) appended to header.
 				preview := "  " + inputPreview(e.Input, home)
 				full := header + preview
 				if lipgloss.Width(full) > innerW {
@@ -495,7 +479,7 @@ func (m Model) eventsContent() string {
 				allLines = append(allLines, header)
 			}
 		} else {
-			// Expanded: header, then bordered block for content.
+			// Expanded: header then bordered content block.
 			allLines = append(allLines, header)
 			bar := borderStyle.Render("│")
 			if e.Type == "Notification" && e.Message != "" {
@@ -727,4 +711,389 @@ func statusColor(s agent.Status) lipgloss.Color {
 	default:
 		return colorYellow
 	}
+}
+
+// dimBody wraps each line of a pre-rendered body string in ANSI dim styling
+// so it appears visually receded when a modal overlay is active.
+func dimBody(body string) string {
+	lines := strings.Split(body, "\n")
+	for i, l := range lines {
+		lines[i] = "\033[2m" + l + "\033[22m"
+	}
+	return strings.Join(lines, "\n")
+}
+
+// overlayCenter places the modal string centered over the background string.
+// For lines within the modal's vertical range, the left portion (startX columns)
+// is taken from the background; the modal line follows; spaces fill the remainder.
+// Lines outside the modal range pass through unchanged.
+func overlayCenter(bg, modal string, bgW, bgH int) string {
+	bgLines := strings.Split(bg, "\n")
+	modalLines := strings.Split(modal, "\n")
+
+	modalW := 0
+	for _, l := range modalLines {
+		if w := lipgloss.Width(l); w > modalW {
+			modalW = w
+		}
+	}
+	modalH := len(modalLines)
+	startX := (bgW - modalW) / 2
+	startY := (bgH - modalH) / 2
+
+	result := make([]string, bgH)
+	for i := 0; i < bgH; i++ {
+		bgLine := ""
+		if i < len(bgLines) {
+			bgLine = bgLines[i]
+		}
+		modalIdx := i - startY
+		if modalIdx < 0 || modalIdx >= len(modalLines) {
+			result[i] = bgLine
+			continue
+		}
+		// Left slice of background: exactly startX visible columns.
+		left := lipgloss.NewStyle().MaxWidth(startX).Render(bgLine)
+		left = lipgloss.NewStyle().Width(startX).Render(left)
+		// Right padding so the full terminal width is covered.
+		right := strings.Repeat(" ", max(0, bgW-startX-modalW))
+		result[i] = left + modalLines[modalIdx] + right
+	}
+	return strings.Join(result, "\n")
+}
+
+// modalEventPosition returns the 1-based position of m.eventCursor within
+// the focused node's visible (non-absorbed) event list, and the total count.
+func (m Model) modalEventPosition() (current, total int) {
+	node := m.focusedNode()
+	if node == nil {
+		return 1, 1
+	}
+	pos := 0
+	current = 1
+	for i := range node.Events {
+		if isAbsorbedPermission(node.Events, i) {
+			continue
+		}
+		pos++
+		if i == m.eventCursor {
+			current = pos
+		}
+	}
+	return current, pos
+}
+
+// renderModalFooterBar returns the single-line footer shown at the bottom of
+// the terminal while the detail modal is open.
+func (m Model) renderModalFooterBar() string {
+	bind := func(key, desc string) string {
+		k := lipgloss.NewStyle().Bold(true).Foreground(colorFg).Render(key)
+		d := lipgloss.NewStyle().Foreground(colorMuted).Render(" " + desc + "  ")
+		return k + d
+	}
+	content := " " + bind("[←/→]", "prev/next") + bind("[j/k]", "scroll") + bind("[esc]", "close")
+	gap := max(0, m.width-lipgloss.Width(content))
+	return content + strings.Repeat(" ", gap)
+}
+
+// formatDuration formats a duration as a human-readable string.
+func formatDuration(d time.Duration) string {
+	if d < 0 {
+		d = -d
+	}
+	if d < time.Second {
+		return fmt.Sprintf("%dms", d.Milliseconds())
+	}
+	if d < time.Minute {
+		return fmt.Sprintf("%.1fs", d.Seconds())
+	}
+	mins := int(d.Minutes())
+	secs := int(d.Seconds()) % 60
+	return fmt.Sprintf("%dm%ds", mins, secs)
+}
+
+// kvValueFull formats a single raw JSON value for modal display without truncation.
+func kvValueFull(raw json.RawMessage, home string) string {
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		if home != "" && strings.HasPrefix(s, home) {
+			s = "~" + s[len(home):]
+		}
+		return s
+	}
+	str := strings.TrimSpace(string(raw))
+	if str == "true" || str == "false" || str == "null" {
+		return str
+	}
+	if len(str) > 0 && (str[0] == '-' || (str[0] >= '0' && str[0] <= '9')) {
+		return str
+	}
+	if len(str) > 0 && str[0] == '[' {
+		var arr []json.RawMessage
+		if err := json.Unmarshal(raw, &arr); err == nil {
+			return fmt.Sprintf("[%d items]", len(arr))
+		}
+	}
+	return "{…}"
+}
+
+// formatKVModal formats a JSON string as key: value lines for the detail modal.
+// Values are fully expanded (no truncation) and wrapped at width runes.
+func formatKVModal(s, home string, width int) []string {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(s), &obj); err != nil {
+		return wrapString(strings.TrimSpace(s), width)
+	}
+	keys := make([]string, 0, len(obj))
+	for k := range obj {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var lines []string
+	for _, k := range keys {
+		val := kvValueFull(obj[k], home)
+		if strings.Contains(val, "\n") {
+			lines = append(lines, k+":")
+			for _, vl := range strings.Split(val, "\n") {
+				lines = append(lines, wrapString("  "+vl, width)...)
+			}
+		} else {
+			lines = append(lines, wrapString(k+": "+val, width)...)
+		}
+	}
+	return lines
+}
+
+// buildModalContent constructs the scrollable lines for the detail modal body.
+// formatInputAsDiff formats an Edit or Write tool input as a colored diff view.
+// file_path and scalar fields are shown as key-value pairs above the diff block.
+// old_string lines are prefixed with "- " in coral; new_string lines with "+ " in green.
+// For Write, the "content" field is treated as a pure insertion (no old lines).
+// The diff is capped at 20 lines; overflow is shown as "… (+N more lines)".
+func formatInputAsDiff(input, home string, width int) []string {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(input), &obj); err != nil {
+		return formatKVModal(input, home, width)
+	}
+
+	getString := func(key string) string {
+		raw, ok := obj[key]
+		if !ok {
+			return ""
+		}
+		var s string
+		if err := json.Unmarshal(raw, &s); err != nil {
+			return ""
+		}
+		return s
+	}
+
+	tilde := func(s string) string {
+		if home != "" && strings.HasPrefix(s, home) {
+			return "~" + s[len(home):]
+		}
+		return s
+	}
+
+	muted := lipgloss.NewStyle().Foreground(colorMuted)
+	removeStyle := lipgloss.NewStyle().Foreground(colorCoral)
+	addStyle := lipgloss.NewStyle().Foreground(colorGreen)
+
+	var lines []string
+
+	// Metadata: file_path and replace_all shown as key-value pairs.
+	if fp := getString("file_path"); fp != "" {
+		lines = append(lines, "file_path: "+tilde(fp))
+	}
+	if raw, ok := obj["replace_all"]; ok {
+		lines = append(lines, "replace_all: "+strings.TrimSpace(string(raw)))
+	}
+
+	oldStr := getString("old_string")
+	newStr := getString("new_string")
+	// Write uses "content" as the new content (pure insertion).
+	if oldStr == "" && newStr == "" {
+		newStr = getString("content")
+	}
+
+	if oldStr == "" && newStr == "" {
+		return lines
+	}
+
+	lines = append(lines, "")
+	divider := muted.Render(strings.Repeat("─", min(width, 41)))
+	lines = append(lines, divider)
+
+	const prefixW = 2  // length of "- " / "+ "
+	const maxLines = 20
+
+	var diffLines []string
+
+	appendWrapped := func(style lipgloss.Style, prefix, s string) {
+		s = strings.ReplaceAll(s, "\t", "    ") // expand tabs before rune-counting
+		wrapped := wrapString(s, max(1, width-prefixW))
+		for i, wl := range wrapped {
+			if i == 0 {
+				diffLines = append(diffLines, style.Render(prefix)+wl)
+			} else {
+				diffLines = append(diffLines, "  "+wl)
+			}
+		}
+	}
+
+	if oldStr != "" {
+		for _, l := range strings.Split(oldStr, "\n") {
+			appendWrapped(removeStyle, "- ", l)
+		}
+	}
+	if newStr != "" {
+		for _, l := range strings.Split(newStr, "\n") {
+			appendWrapped(addStyle, "+ ", l)
+		}
+	}
+
+	if len(diffLines) > maxLines {
+		extra := len(diffLines) - maxLines
+		diffLines = diffLines[:maxLines]
+		diffLines = append(diffLines, muted.Render(fmt.Sprintf("… (+%d more lines)", extra)))
+	}
+
+	lines = append(lines, diffLines...)
+	lines = append(lines, divider)
+	return lines
+}
+
+func (m Model) buildModalContent(e agent.Event, node *agent.Node, home string, width int) []string {
+	muted := lipgloss.NewStyle().Foreground(colorMuted)
+	warn := lipgloss.NewStyle().Foreground(colorYellow).Bold(true)
+	divider := muted.Render(strings.Repeat("─", min(width, 48)))
+
+	var lines []string
+
+	switch e.Type {
+	case "PermissionRequest":
+		lines = append(lines, warn.Render("⚠  Awaiting approval"), "")
+	case "Stop", "SubagentStop":
+		if len(node.Events) > 1 {
+			first := node.Events[0]
+			dur := e.Timestamp.Sub(first.Timestamp)
+			if dur > 0 {
+				lines = append(lines, muted.Render("Duration: "+formatDuration(dur)), "")
+			}
+		}
+	}
+
+	if e.Message != "" {
+		lines = append(lines, muted.Render("Message:"))
+		for _, l := range wrapString(e.Message, width-2) {
+			lines = append(lines, "  "+l)
+		}
+		lines = append(lines, "")
+	}
+
+	if e.Input != "" {
+		if e.Tool == "Edit" || e.Tool == "Write" {
+			for _, l := range formatInputAsDiff(e.Input, home, width) {
+				lines = append(lines, l)
+			}
+		} else {
+			lines = append(lines, muted.Render("Input:"))
+			for _, l := range formatKVModal(e.Input, home, width-2) {
+				lines = append(lines, "  "+l)
+			}
+		}
+		if e.Response != "" {
+			lines = append(lines, "", divider, "")
+		}
+	}
+
+	if e.Response != "" {
+		lines = append(lines, muted.Render("Output:"))
+		for _, l := range formatKVModal(e.Response, home, width-2) {
+			lines = append(lines, "  "+l)
+		}
+	}
+
+	return lines
+}
+
+// renderDetailModal renders the full-screen detail modal overlay for the
+// currently focused event. bodyH is the height of the body area (excluding footer).
+func (m Model) renderDetailModal(bodyH int) string {
+	node := m.focusedNode()
+	if node == nil || len(node.Events) == 0 {
+		return ""
+	}
+	idx := m.eventCursor
+	if idx >= len(node.Events) {
+		idx = len(node.Events) - 1
+	}
+	e := node.Events[idx]
+	home, _ := os.UserHomeDir()
+
+	modalW := max(20, m.width*80/100)
+	modalH := max(6, bodyH*80/100)
+
+	// Inner width: border(1) + space(1) on each side = 4 total.
+	innerW := max(1, modalW-4)
+	// Height layout: top border(1) + content + separator(1) + footer(1) + bottom border(1).
+	contentH := max(1, modalH-4)
+
+	contentLines := m.buildModalContent(e, node, home, innerW)
+
+	// Clamp modal scroll.
+	maxScroll := max(0, len(contentLines)-contentH)
+	scroll := min(m.modalScroll, maxScroll)
+	visEnd := min(scroll+contentH, len(contentLines))
+	visible := contentLines[scroll:visEnd]
+
+	// Pad to contentH so the box is a fixed size.
+	padded := make([]string, contentH)
+	for i := range padded {
+		if i < len(visible) {
+			padded[i] = visible[i]
+		}
+	}
+
+	bs := lipgloss.NewStyle().Foreground(colorAccent)
+
+	// Title: "EventType · ToolName  (cur / tot)"
+	cur, tot := m.modalEventPosition()
+	posStr := lipgloss.NewStyle().Foreground(colorMuted).Render(fmt.Sprintf("(%d / %d)", cur, tot))
+	title := lipgloss.NewStyle().Bold(true).Foreground(colorAccent).Render(e.Type)
+	if e.Tool != "" {
+		title += lipgloss.NewStyle().Foreground(colorMuted).Render(" · ") +
+			lipgloss.NewStyle().Foreground(toolColor(e.Tool)).Render(e.Tool)
+	}
+	title += "  " + posStr
+
+	titleW := lipgloss.Width(title)
+	topDashes := max(0, modalW-3-titleW)
+	topBorder := bs.Render("╭─") + title + bs.Render(strings.Repeat("─", topDashes)+"╮")
+
+	sep := bs.Render("├") + bs.Render(strings.Repeat("─", modalW-2)) + bs.Render("┤")
+
+	// Internal footer hints.
+	footerMuted := lipgloss.NewStyle().Foreground(colorMuted)
+	footerBold := lipgloss.NewStyle().Bold(true).Foreground(colorFg)
+	footerText := footerBold.Render("[←/→]") + footerMuted.Render(" prev/next  ") +
+		footerBold.Render("[j/k]") + footerMuted.Render(" scroll  ") +
+		footerBold.Render("[esc]") + footerMuted.Render(" close")
+	footerPad := strings.Repeat(" ", max(0, innerW-lipgloss.Width(footerText)))
+	footerLine := bs.Render("│") + " " + footerText + footerPad + " " + bs.Render("│")
+
+	bottomBorder := bs.Render("╰") + bs.Render(strings.Repeat("─", modalW-2)) + bs.Render("╯")
+
+	var out []string
+	out = append(out, topBorder)
+	for _, cl := range padded {
+		if lipgloss.Width(cl) > innerW {
+			cl = lipgloss.NewStyle().MaxWidth(innerW - 1).Render(cl) + "…"
+		}
+		rendered := lipgloss.NewStyle().Width(innerW).Render(cl)
+		out = append(out, bs.Render("│")+" "+rendered+" "+bs.Render("│"))
+	}
+	out = append(out, sep, footerLine, bottomBorder)
+
+	return strings.Join(out, "\n")
 }

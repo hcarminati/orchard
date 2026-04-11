@@ -121,6 +121,10 @@ type Model struct {
 	eventScroll     int                // index of the first visible row in the events panel
 	eventCursor     int                // index into the focused node's Events slice (selected row)
 	expandedEvents  map[string]bool    // set of "nodeID:eventIdx" keys for expanded tool events
+	modalOpen       bool               // whether the detail modal is visible
+	modalScroll     int                // vertical scroll offset within modal content
+	lastClickTime   time.Time          // timestamp of the last left-click in the events panel
+	lastClickIdx    int                // event index of the last left-click in the events panel
 	collapsed       map[string]bool    // set of node IDs whose subtrees are currently hidden
 	collapsedGroups map[string]bool    // set of GroupIDs whose members are currently hidden
 	statusFilter    filterMode         // which nodes to show in the agent tree
@@ -143,9 +147,9 @@ func New(nodes []agent.Node, eventCh <-chan agent.Event) Model {
 		hasSession:      len(nodes) > 0,
 		eventCh:         eventCh,
 		timerGen:        make(map[string]int),
+		expandedEvents:  make(map[string]bool),
 		collapsed:       make(map[string]bool),
 		collapsedGroups: make(map[string]bool),
-		expandedEvents:  make(map[string]bool),
 		statusFilter:    filterAll,
 		eventScroll:     math.MaxInt, // will be clamped to real max on first render
 	}
@@ -224,7 +228,7 @@ func eventKey(nodeID string, idx int) string {
 	return nodeID + ":" + strconv.Itoa(idx)
 }
 
-// isToolEvent reports whether an event can be expanded to show input/output.
+// isToolEvent reports whether an event can be expanded inline to show input/output.
 func isToolEvent(e agent.Event) bool {
 	return e.Type == "PreToolUse" || e.Type == "PostToolUse" ||
 		e.Type == "PermissionRequest" || e.Type == "Notification"
@@ -281,7 +285,7 @@ func wrappedLineCount(s string, width int) int {
 }
 
 // linesForEvent returns the number of screen lines that the event at idx
-// occupies, accounting for whether it is currently expanded.
+// occupies, accounting for whether it is currently expanded inline.
 // Absorbed PermissionRequest events return 0 — they are rendered inside the
 // preceding PreToolUse row and take no space of their own.
 func (m *Model) linesForEvent(node *agent.Node, idx int) int {
@@ -296,13 +300,12 @@ func (m *Model) linesForEvent(node *agent.Node, idx int) int {
 	innerW := m.innerWidth()
 	const indent = 5 // "│    " prefix
 	if e.Type == "Notification" {
-		// Expanded Notification: header + "│  Message:" label + message lines + trailing "│".
 		if e.Message == "" {
 			return 2 // header + trailing │
 		}
 		return 3 + wrappedLineCount(e.Message, innerW-indent)
 	}
-	count := 3 // header line + "│  Input:" label + trailing "│"
+	count := 3 // header + "│  Input:" + trailing "│"
 	count += wrappedLineCount(e.Input, innerW-indent)
 	if e.Response != "" {
 		count += 1 + wrappedLineCount(e.Response, innerW-indent)
@@ -449,6 +452,38 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.scrollEventToBottom()
 
 	case tea.KeyMsg:
+		if m.modalOpen {
+			switch msg.String() {
+			case "esc", "q":
+				m.modalOpen = false
+				m.modalScroll = 0
+			case "j", "down":
+				m.modalScroll++
+			case "k", "up":
+				if m.modalScroll > 0 {
+					m.modalScroll--
+				}
+			case "right", "l":
+				if node := m.focusedNode(); node != nil && m.eventCursor < len(node.Events)-1 {
+					m.eventCursor++
+					for m.eventCursor < len(node.Events)-1 && isAbsorbedPermission(node.Events, m.eventCursor) {
+						m.eventCursor++
+					}
+					m.modalScroll = 0
+				}
+			case "left", "h":
+				if m.eventCursor > 0 {
+					m.eventCursor--
+					if node := m.focusedNode(); node != nil {
+						for m.eventCursor > 0 && isAbsorbedPermission(node.Events, m.eventCursor) {
+							m.eventCursor--
+						}
+					}
+					m.modalScroll = 0
+				}
+			}
+			return m, nil
+		}
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
@@ -518,12 +553,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.activePanel == panelEvents {
 				node := m.focusedNode()
 				if node != nil && m.eventCursor < len(node.Events) {
-					e := node.Events[m.eventCursor]
-					if isToolEvent(e) {
-						key := eventKey(node.ID, m.eventCursor)
-						m.expandedEvents[key] = !m.expandedEvents[key]
-						m.scrollToCursor()
-					}
+					m.modalOpen = true
+					m.modalScroll = 0
 				}
 			} else {
 				vn := m.visibleNodes()
@@ -544,20 +575,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.MouseMsg:
-		// Scroll wheel / trackpad: route to whichever panel the pointer is over.
+		// Scroll wheel / trackpad: route to modal when open, otherwise to whichever panel the pointer is over.
 		if msg.Button == tea.MouseButtonWheelUp || msg.Button == tea.MouseButtonWheelDown {
 			delta := 1
 			if msg.Button == tea.MouseButtonWheelUp {
 				delta = -1
 			}
-			leftW := m.width * 35 / 100
-			if msg.X < leftW {
-				n := len(m.visibleNodes())
-				h := m.agentsPanelInnerH()
-				m.scrollOffset = max(0, min(m.scrollOffset+delta, max(0, n-h)))
+			if m.modalOpen {
+				m.modalScroll = max(0, m.modalScroll+delta)
 			} else {
-				m.eventScroll += delta
-				m.clampEventScroll()
+				leftW := m.width * 35 / 100
+				if msg.X < leftW {
+					n := len(m.visibleNodes())
+					h := m.agentsPanelInnerH()
+					m.scrollOffset = max(0, min(m.scrollOffset+delta, max(0, n-h)))
+				} else {
+					m.eventScroll += delta
+					m.clampEventScroll()
+				}
 			}
 		}
 		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
@@ -606,10 +641,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if lineOffset >= 0 {
 						if idx, ok := m.eventAtLine(node, lineOffset); ok {
 							m.activePanel = panelEvents
-							if idx == m.eventCursor && isToolEvent(node.Events[idx]) {
-								// Clicking the already-selected tool event toggles expansion.
-								key := eventKey(node.ID, idx)
-								m.expandedEvents[key] = !m.expandedEvents[key]
+							// Double-click (same event within 400ms) opens the modal.
+							if idx == m.lastClickIdx && !m.lastClickTime.IsZero() &&
+								time.Since(m.lastClickTime) < 400*time.Millisecond {
+								m.modalOpen = true
+								m.modalScroll = 0
+								m.lastClickTime = time.Time{}
+							} else {
+								// Single click: select + toggle inline expand for tool events.
+								if idx == m.eventCursor && isToolEvent(node.Events[idx]) {
+									key := eventKey(node.ID, idx)
+									m.expandedEvents[key] = !m.expandedEvents[key]
+								}
+								m.lastClickTime = time.Now()
+								m.lastClickIdx = idx
 							}
 							m.eventCursor = idx
 							m.scrollToCursor()
@@ -675,10 +720,13 @@ func (m Model) View() string {
 	}
 
 	bodyH := m.height - footerHeight
+	body := m.renderBody(bodyH)
+	footer := m.renderFooter()
 
-	return lipgloss.JoinVertical(
-		lipgloss.Left,
-		m.renderBody(bodyH),
-		m.renderFooter(),
-	)
+	if m.modalOpen {
+		body = overlayCenter(dimBody(body), m.renderDetailModal(bodyH), m.width, bodyH)
+		footer = m.renderModalFooterBar()
+	}
+
+	return lipgloss.JoinVertical(lipgloss.Left, body, footer)
 }

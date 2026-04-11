@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -382,10 +384,9 @@ func TestEventsContent_ExpandedToolEvent_ShowsFullInputAndOutput(t *testing.T) {
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = next.(Model)
 
-	// Switch to events panel and press enter to expand.
-	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
-	m = next.(Model)
-	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	// Click the event row to expand inline (cursor is already on the only event).
+	leftW := 120 * 35 / 100
+	next, _ = m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: leftW + 1, Y: 1})
 	m = next.(Model)
 
 	content := m.eventsContent()
@@ -403,7 +404,7 @@ func TestEventsContent_ExpandedToolEvent_ShowsFullInputAndOutput(t *testing.T) {
 	}
 }
 
-func TestEventsContent_EnterTogglesExpand(t *testing.T) {
+func TestEventsContent_ClickTogglesExpand(t *testing.T) {
 	nodes := []agent.Node{
 		{
 			ID:     "s1xxxxxxxx",
@@ -424,28 +425,30 @@ func TestEventsContent_EnterTogglesExpand(t *testing.T) {
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = next.(Model)
 
-	// Switch to events panel.
-	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
-	m = next.(Model)
+	leftW := 120 * 35 / 100
+	click := tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: leftW + 1, Y: 1}
 
-	// First enter: expand.
-	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	// First click: expand.
+	next, _ = m.Update(click)
 	m = next.(Model)
 	content := m.eventsContent()
 	if !strings.Contains(content, "Input:") {
-		t.Errorf("expected expanded after first enter, got: %q", content)
+		t.Errorf("expected expanded after first click, got: %q", content)
 	}
 
-	// Second enter: collapse.
-	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	// Reset double-click timer so the next click is treated as a single click.
+	m.lastClickTime = time.Time{}
+
+	// Second click: collapse.
+	next, _ = m.Update(click)
 	m = next.(Model)
 	content = m.eventsContent()
 	if strings.Contains(content, "Input:") {
-		t.Errorf("expected collapsed after second enter, got: %q", content)
+		t.Errorf("expected collapsed after second click, got: %q", content)
 	}
 }
 
-func TestEventsContent_NonToolEventNotExpandable(t *testing.T) {
+func TestEventsContent_NonToolEvent_ClickDoesNotExpandInline(t *testing.T) {
 	nodes := []agent.Node{
 		{
 			ID:     "s1xxxxxxxx",
@@ -461,19 +464,15 @@ func TestEventsContent_NonToolEventNotExpandable(t *testing.T) {
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = next.(Model)
 
-	// Switch to events panel and attempt to expand each non-tool event.
-	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
-	m = next.(Model)
-
-	for range 2 {
-		next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	leftW := 120 * 35 / 100
+	// Click each event row — non-tool events should not produce inline Input: content.
+	for row := 1; row <= 2; row++ {
+		next, _ = m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: leftW + 1, Y: row})
 		m = next.(Model)
 		content := m.eventsContent()
 		if strings.Contains(content, "Input:") {
-			t.Errorf("expected non-tool event to be unexpandable, got: %q", content)
+			t.Errorf("expected non-tool event row %d to have no inline expansion, got: %q", row, content)
 		}
-		next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
-		m = next.(Model)
 	}
 }
 
@@ -529,7 +528,7 @@ func TestEventsContent_NotificationLongMessage_TruncatedAt40(t *testing.T) {
 	}
 }
 
-func TestEventsContent_NotificationEmptyMessage_ShowsArrow(t *testing.T) {
+func TestEventsContent_NotificationEmptyMessage_ShowsType(t *testing.T) {
 	nodes := []agent.Node{
 		{
 			ID:     "s1xxxxxxxx",
@@ -547,8 +546,9 @@ func TestEventsContent_NotificationEmptyMessage_ShowsArrow(t *testing.T) {
 	if !strings.Contains(content, "Notification") {
 		t.Errorf("expected 'Notification' in events content, got: %q", content)
 	}
-	if !strings.Contains(content, "►") {
-		t.Errorf("expected '►' separator even with empty message, got: %q", content)
+	// No inline message means no ► separator.
+	if strings.Contains(content, "►") {
+		t.Errorf("expected no '►' separator when message is empty, got: %q", content)
 	}
 }
 
@@ -701,9 +701,9 @@ func TestEventsContent_Notification_Expandable(t *testing.T) {
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = next.(Model)
 
-	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
-	m = next.(Model)
-	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	// Click the row to expand inline.
+	leftW := 120 * 35 / 100
+	next, _ = m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: leftW + 1, Y: 1})
 	m = next.(Model)
 
 	content := m.eventsContent()
@@ -736,9 +736,9 @@ func TestEventsContent_Notification_ExpandedShowsDownArrow(t *testing.T) {
 		t.Errorf("expected '►' when collapsed, got: %q", content)
 	}
 
-	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
-	m = next.(Model)
-	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	// Click to expand inline.
+	leftW := 120 * 35 / 100
+	next, _ = m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: leftW + 1, Y: 1})
 	m = next.(Model)
 
 	// Expanded — ► replaced by ▼, message no longer inline.
@@ -751,7 +751,7 @@ func TestEventsContent_Notification_ExpandedShowsDownArrow(t *testing.T) {
 	}
 }
 
-func TestEventsContent_Notification_EnterTogglesExpand(t *testing.T) {
+func TestEventsContent_Notification_EnterOpensModal(t *testing.T) {
 	nodes := []agent.Node{
 		{
 			ID:     "s1xxxxxxxx",
@@ -769,18 +769,17 @@ func TestEventsContent_Notification_EnterTogglesExpand(t *testing.T) {
 	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
 	m = next.(Model)
 
-	// First enter: expand.
-	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m = next.(Model)
-	if !strings.Contains(m.eventsContent(), "Message:") {
-		t.Error("expected expanded after first enter")
+	if m.modalOpen {
+		t.Fatal("expected modal closed before enter")
 	}
-
-	// Second enter: collapse.
 	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = next.(Model)
+	if !m.modalOpen {
+		t.Error("expected modal open after enter in events panel")
+	}
+	// eventsContent is still intact (not expanded inline).
 	if strings.Contains(m.eventsContent(), "Message:") {
-		t.Error("expected collapsed after second enter")
+		t.Error("expected no inline expansion — modal handles full content")
 	}
 }
 
@@ -854,9 +853,9 @@ func TestEventsContent_PermissionRequest_Expandable(t *testing.T) {
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = next.(Model)
 
-	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
-	m = next.(Model)
-	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	// Click the row to expand inline.
+	leftW := 120 * 35 / 100
+	next, _ = m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: leftW + 1, Y: 1})
 	m = next.(Model)
 
 	content := m.eventsContent()
@@ -1006,12 +1005,11 @@ func TestEventsContent_ExpandedLongInput_LineWrapped(t *testing.T) {
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 40})
 	m = next.(Model)
 
-	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
-	m = next.(Model)
-	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	// Click the row to expand inline (cursor is on the only event).
+	leftW := 80 * 35 / 100
+	next, _ = m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: leftW + 1, Y: 1})
 	m = next.(Model)
 
-	leftW := 80 * 35 / 100
 	rightW := 80 - leftW
 	innerW := rightW - 2
 
@@ -1024,5 +1022,444 @@ func TestEventsContent_ExpandedLongInput_LineWrapped(t *testing.T) {
 	// Content must include the long input split across multiple lines (not truncated).
 	if !strings.Contains(content, strings.Repeat("a", 10)) {
 		t.Errorf("expected long input content in expanded view, got: %q", content)
+	}
+}
+
+// --- Detail modal ---
+
+func makeModalModel(eventType, tool, input, response, message string) Model {
+	e := agent.Event{
+		Type:      eventType,
+		Tool:      tool,
+		Input:     input,
+		Response:  response,
+		Message:   message,
+		SessionID: "s1xxxxxxxx",
+		Timestamp: time.Now(),
+	}
+	nodes := []agent.Node{
+		{ID: "s1xxxxxxxx", Name: "session:s1xxxxxx", Status: agent.StatusRunning, Events: []agent.Event{e}},
+	}
+	m := New(nodes, nil)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	return next.(Model)
+}
+
+func TestModal_EnterOpensModal(t *testing.T) {
+	m := makeModalModel("PreToolUse", "Bash", `{"command":"ls"}`, "", "")
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = next.(Model)
+	if m.modalOpen {
+		t.Fatal("expected modal closed before enter")
+	}
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(Model)
+	if !m.modalOpen {
+		t.Error("expected modalOpen after enter in events panel")
+	}
+}
+
+func TestModal_EnterOpensForAnyEventType(t *testing.T) {
+	for _, evType := range []string{"Stop", "SubagentStop", "Notification", "PermissionRequest", "PostToolUse"} {
+		m := makeModalModel(evType, "", "", "", "msg")
+		next, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+		m = next.(Model)
+		next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		m = next.(Model)
+		if !m.modalOpen {
+			t.Errorf("expected modal open after enter for event type %q", evType)
+		}
+	}
+}
+
+func TestModal_ClosesOnEsc(t *testing.T) {
+	m := makeModalModel("PreToolUse", "Bash", `{"command":"ls"}`, "", "")
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = next.(Model)
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(Model)
+	if !m.modalOpen {
+		t.Fatal("expected modal open")
+	}
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = next.(Model)
+	if m.modalOpen {
+		t.Error("expected modal closed after esc")
+	}
+}
+
+func TestModal_ClosesOnQ_DoesNotQuit(t *testing.T) {
+	m := makeModalModel("PreToolUse", "Bash", `{"command":"ls"}`, "", "")
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = next.(Model)
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(Model)
+
+	model, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	m = model.(Model)
+	if m.modalOpen {
+		t.Error("expected modal closed after q")
+	}
+	if cmd != nil {
+		t.Error("expected nil cmd (no quit) when q closes modal")
+	}
+}
+
+func TestModal_QQuitsWhenClosed(t *testing.T) {
+	m := makeModalModel("PreToolUse", "Bash", `{"command":"ls"}`, "", "")
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	if cmd == nil {
+		t.Error("expected quit cmd when modal is closed and q is pressed")
+	}
+}
+
+func TestModal_NavigatesRight(t *testing.T) {
+	nodes := []agent.Node{
+		{
+			ID:     "s1xxxxxxxx",
+			Name:   "session:s1xxxxxx",
+			Status: agent.StatusRunning,
+			Events: []agent.Event{
+				{Type: "PreToolUse", Tool: "Bash", Input: `{"command":"a"}`, SessionID: "s1xxxxxxxx", Timestamp: time.Now()},
+				{Type: "PreToolUse", Tool: "Read", Input: `{"command":"b"}`, SessionID: "s1xxxxxxxx", Timestamp: time.Now()},
+			},
+		},
+	}
+	m := New(nodes, nil)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = next.(Model)
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = next.(Model)
+	// Move cursor to first event.
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	m = next.(Model)
+	if m.eventCursor != 0 {
+		t.Fatalf("expected eventCursor=0, got %d", m.eventCursor)
+	}
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(Model)
+
+	before := m.eventCursor
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	m = next.(Model)
+	if m.eventCursor != before+1 {
+		t.Errorf("expected eventCursor=%d after →, got %d", before+1, m.eventCursor)
+	}
+	if m.modalScroll != 0 {
+		t.Error("expected modalScroll reset to 0 on navigation")
+	}
+}
+
+func TestModal_NavigatesLeft(t *testing.T) {
+	nodes := []agent.Node{
+		{
+			ID:     "s1xxxxxxxx",
+			Name:   "session:s1xxxxxx",
+			Status: agent.StatusRunning,
+			Events: []agent.Event{
+				{Type: "PreToolUse", Tool: "Bash", Input: `{"command":"a"}`, SessionID: "s1xxxxxxxx", Timestamp: time.Now()},
+				{Type: "PreToolUse", Tool: "Read", Input: `{"command":"b"}`, SessionID: "s1xxxxxxxx", Timestamp: time.Now()},
+			},
+		},
+	}
+	m := New(nodes, nil)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = next.(Model)
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = next.(Model)
+	// Cursor starts at last event (index 1); open modal then navigate left.
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(Model)
+
+	before := m.eventCursor
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	m = next.(Model)
+	if m.eventCursor != before-1 {
+		t.Errorf("expected eventCursor=%d after ←, got %d", before-1, m.eventCursor)
+	}
+}
+
+func TestModal_ScrollDownAndUp(t *testing.T) {
+	m := makeModalModel("PreToolUse", "Bash", `{"command":"ls"}`, "", "")
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = next.(Model)
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(Model)
+
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	m = next.(Model)
+	if m.modalScroll != 1 {
+		t.Errorf("expected modalScroll=1 after j, got %d", m.modalScroll)
+	}
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	m = next.(Model)
+	if m.modalScroll != 0 {
+		t.Errorf("expected modalScroll=0 after k, got %d", m.modalScroll)
+	}
+	// k at top should not go negative.
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	m = next.(Model)
+	if m.modalScroll < 0 {
+		t.Errorf("expected modalScroll >= 0, got %d", m.modalScroll)
+	}
+}
+
+func TestModal_PositionCounter(t *testing.T) {
+	nodes := []agent.Node{
+		{
+			ID:     "s1xxxxxxxx",
+			Name:   "session:s1xxxxxx",
+			Status: agent.StatusRunning,
+			Events: []agent.Event{
+				{Type: "PreToolUse", Tool: "Bash", Input: `{"command":"a"}`, SessionID: "s1xxxxxxxx", Timestamp: time.Now()},
+				{Type: "PreToolUse", Tool: "Read", Input: `{"command":"b"}`, SessionID: "s1xxxxxxxx", Timestamp: time.Now()},
+				{Type: "PreToolUse", Tool: "Edit", Input: `{"command":"c"}`, SessionID: "s1xxxxxxxx", Timestamp: time.Now()},
+			},
+		},
+	}
+	m := New(nodes, nil)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = next.(Model)
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = next.(Model)
+	// Cursor at last event (index 2).
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(Model)
+
+	cur, tot := m.modalEventPosition()
+	if tot != 3 {
+		t.Errorf("expected total=3, got %d", tot)
+	}
+	if cur != 3 {
+		t.Errorf("expected current=3 (last event), got %d", cur)
+	}
+}
+
+func TestModal_PermissionRequestShowsWarningHeader(t *testing.T) {
+	m := New([]agent.Node{
+		{
+			ID:     "s1xxxxxxxx",
+			Name:   "session:s1xxxxxx",
+			Status: agent.StatusRunning,
+			Events: []agent.Event{
+				{Type: "PermissionRequest", Tool: "Bash", Input: `{"command":"rm -rf /"}`, SessionID: "s1xxxxxxxx", Timestamp: time.Now()},
+			},
+		},
+	}, nil)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = next.(Model)
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = next.(Model)
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(Model)
+
+	node := m.focusedNode()
+	if node == nil {
+		t.Fatal("expected focused node")
+	}
+	content := strings.Join(m.buildModalContent(node.Events[0], node, "", 80), "\n")
+	if !strings.Contains(content, "⚠") {
+		t.Errorf("expected ⚠ in PermissionRequest modal content, got: %q", content)
+	}
+	if !strings.Contains(content, "Awaiting approval") {
+		t.Errorf("expected 'Awaiting approval' header, got: %q", content)
+	}
+}
+
+func TestModal_StopShowsDuration(t *testing.T) {
+	start := time.Now().Add(-5 * time.Second)
+	stop := time.Now()
+	nodes := []agent.Node{
+		{
+			ID:     "s1xxxxxxxx",
+			Name:   "session:s1xxxxxx",
+			Status: agent.StatusRunning,
+			Events: []agent.Event{
+				{Type: "PreToolUse", Tool: "Bash", Input: `{"command":"ls"}`, SessionID: "s1xxxxxxxx", Timestamp: start},
+				{Type: "Stop", SessionID: "s1xxxxxxxx", Timestamp: stop},
+			},
+		},
+	}
+	m := New(nodes, nil)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = next.(Model)
+
+	node := m.focusedNode()
+	if node == nil {
+		t.Fatal("expected focused node")
+	}
+	stopEvent := node.Events[1]
+	content := strings.Join(m.buildModalContent(stopEvent, node, "", 80), "\n")
+	if !strings.Contains(content, "Duration:") {
+		t.Errorf("expected 'Duration:' in Stop modal content, got: %q", content)
+	}
+}
+
+func TestModal_FullContentNotTruncated(t *testing.T) {
+	longVal := strings.Repeat("x", 100)
+	input := `{"command":"` + longVal + `"}`
+	m := makeModalModel("PreToolUse", "Bash", input, "", "")
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = next.(Model)
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(Model)
+
+	node := m.focusedNode()
+	if node == nil {
+		t.Fatal("expected focused node")
+	}
+	content := strings.Join(m.buildModalContent(node.Events[0], node, "", 80), "\n")
+	// The value is wrapped across lines — verify no ellipsis truncation and that
+	// more consecutive x's appear than the old 60-rune truncation limit would allow.
+	if strings.Contains(content, "x…") {
+		t.Errorf("expected no truncation in modal content, got: %q", content)
+	}
+	if !strings.Contains(content, strings.Repeat("x", 61)) {
+		t.Errorf("expected >60 consecutive x's in modal content (full value), got: %q", content)
+	}
+}
+
+// --- Edit/Write diff view ---
+
+func TestModal_EditDiff_ShowsFilePathAndDiffBlock(t *testing.T) {
+	input := `{"file_path":"/tmp/foo.go","old_string":"old line","new_string":"new line","replace_all":false}`
+	lines := formatInputAsDiff(input, "", 80)
+	joined := strings.Join(lines, "\n")
+
+	if !strings.Contains(joined, "file_path: /tmp/foo.go") {
+		t.Errorf("expected file_path in diff output, got: %q", joined)
+	}
+	if !strings.Contains(joined, "replace_all: false") {
+		t.Errorf("expected replace_all in diff output, got: %q", joined)
+	}
+	if !strings.Contains(joined, "- old line") {
+		t.Errorf("expected removed line with '- ' prefix, got: %q", joined)
+	}
+	if !strings.Contains(joined, "+ new line") {
+		t.Errorf("expected added line with '+ ' prefix, got: %q", joined)
+	}
+	// old_string and new_string keys must not appear as raw key-value pairs.
+	if strings.Contains(joined, "old_string:") {
+		t.Errorf("expected old_string key to be absent (replaced by diff), got: %q", joined)
+	}
+	if strings.Contains(joined, "new_string:") {
+		t.Errorf("expected new_string key to be absent (replaced by diff), got: %q", joined)
+	}
+}
+
+func TestModal_EditDiff_PureInsertion_OnlyPlusLines(t *testing.T) {
+	input := `{"file_path":"/tmp/new.go","old_string":"","new_string":"line one\nline two"}`
+	lines := formatInputAsDiff(input, "", 80)
+	joined := strings.Join(lines, "\n")
+
+	if strings.Contains(joined, "- ") {
+		t.Errorf("expected no removal lines for pure insertion, got: %q", joined)
+	}
+	if !strings.Contains(joined, "+ line one") {
+		t.Errorf("expected added lines, got: %q", joined)
+	}
+}
+
+func TestModal_EditDiff_PureDeletion_OnlyMinusLines(t *testing.T) {
+	input := `{"file_path":"/tmp/old.go","old_string":"gone","new_string":""}`
+	lines := formatInputAsDiff(input, "", 80)
+	joined := strings.Join(lines, "\n")
+
+	if !strings.Contains(joined, "- gone") {
+		t.Errorf("expected removal line, got: %q", joined)
+	}
+	if strings.Contains(joined, "+ ") {
+		t.Errorf("expected no addition lines for pure deletion, got: %q", joined)
+	}
+}
+
+func TestModal_EditDiff_CapsAt20Lines(t *testing.T) {
+	// Build an old_string with 30 lines.
+	var oldLines []string
+	for i := 0; i < 30; i++ {
+		oldLines = append(oldLines, fmt.Sprintf("line %d", i))
+	}
+	old := strings.Join(oldLines, "\n")
+	input := `{"file_path":"/tmp/f.go","old_string":` + jsonString(old) + `,"new_string":""}`
+	lines := formatInputAsDiff(input, "", 80)
+	joined := strings.Join(lines, "\n")
+
+	// Must contain the overflow indicator.
+	if !strings.Contains(joined, "more lines") {
+		t.Errorf("expected overflow indicator for 30-line diff, got: %q", joined)
+	}
+}
+
+func TestModal_WriteDiff_UsesContentField(t *testing.T) {
+	input := `{"file_path":"/tmp/new.go","content":"package main\n\nfunc main() {}"}`
+	lines := formatInputAsDiff(input, "", 80)
+	joined := strings.Join(lines, "\n")
+
+	if !strings.Contains(joined, "+ package main") {
+		t.Errorf("expected Write content shown as added lines, got: %q", joined)
+	}
+	if strings.Contains(joined, "- ") {
+		t.Errorf("expected no removal lines for Write, got: %q", joined)
+	}
+}
+
+func TestModal_EditDiff_HomeDirReplaced(t *testing.T) {
+	home := os.Getenv("HOME")
+	if home == "" {
+		t.Skip("HOME not set")
+	}
+	input := `{"file_path":"` + home + `/project/main.go","old_string":"x","new_string":"y"}`
+	lines := formatInputAsDiff(input, home, 80)
+	joined := strings.Join(lines, "\n")
+
+	if !strings.Contains(joined, "~/project/main.go") {
+		t.Errorf("expected ~ prefix in file_path, got: %q", joined)
+	}
+}
+
+func TestModal_NonEditTool_UsesKeyValue(t *testing.T) {
+	// Bash events should still use the standard key-value display, not the diff.
+	m := makeModalModel("PreToolUse", "Bash", `{"command":"ls -la"}`, "", "")
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = next.(Model)
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(Model)
+
+	node := m.focusedNode()
+	if node == nil {
+		t.Fatal("expected focused node")
+	}
+	content := strings.Join(m.buildModalContent(node.Events[0], node, "", 80), "\n")
+	if !strings.Contains(content, "Input:") {
+		t.Errorf("expected 'Input:' label for non-Edit tool, got: %q", content)
+	}
+	if strings.Contains(content, "─────") {
+		t.Errorf("expected no diff divider for non-Edit tool, got: %q", content)
+	}
+}
+
+// jsonString encodes s as a JSON string literal.
+func jsonString(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}
+
+func TestModal_DoubleClickOpens(t *testing.T) {
+	m := makeModalModel("PreToolUse", "Bash", `{"command":"ls"}`, "", "")
+	leftW := 120 * 35 / 100
+	click := tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: leftW + 1, Y: 1}
+
+	// First click: select / expand inline.
+	next, _ := m.Update(click)
+	m = next.(Model)
+	if m.modalOpen {
+		t.Fatal("expected modal closed after first click")
+	}
+
+	// Second click within 400ms: open modal.
+	next, _ = m.Update(click)
+	m = next.(Model)
+	if !m.modalOpen {
+		t.Error("expected modal open after double-click")
 	}
 }
