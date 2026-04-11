@@ -558,6 +558,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusFilter = (m.statusFilter + 1) % 3
 			m.cursor = 0
 			m.scrollOffset = 0
+		case "G":
+			if m.activePanel == panelEvents {
+				m.scrollEventToBottom()
+			}
+		case "g":
+			if m.activePanel == panelEvents {
+				node := m.focusedNode()
+				if node != nil {
+					m.eventCursor = 0
+					for m.eventCursor < len(node.Events)-1 && isAbsorbedPermission(node.Events, m.eventCursor) {
+						m.eventCursor++
+					}
+				}
+				m.eventScroll = 0
+			}
 		case "enter":
 			if m.activePanel == panelEvents {
 				node := m.focusedNode()

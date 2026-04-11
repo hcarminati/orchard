@@ -185,6 +185,57 @@ func TestApplyEvent_WithParentID_ParentNotYetInTree_SurfacesAsRoot(t *testing.T)
 	}
 }
 
+func TestApplyEvent_SubagentLiveEvents_ClaimPlaceholderNode(t *testing.T) {
+	tree := NewTree()
+
+	// Parent session starts.
+	tree.ApplyEvent(Event{Type: "Notification", SessionID: "parent", Timestamp: time.Now()})
+
+	// Parent spawns a subagent via the Agent tool — placeholder node created under tool_use_id.
+	tree.ApplyEvent(Event{
+		Type:      "PreToolUse",
+		SessionID: "parent",
+		Tool:      "Agent",
+		ToolUseID: "toolu_abc",
+		Input:     `{"subagent_type":"general-purpose","prompt":"do something"}`,
+		Timestamp: time.Now(),
+	})
+
+	placeholder := tree.Nodes["toolu_abc"]
+	if placeholder == nil {
+		t.Fatal("expected placeholder node at tool_use_id")
+	}
+
+	// Live hook event arrives from the subagent's real session.
+	tree.ApplyEvent(Event{
+		Type:      "PreToolUse",
+		SessionID: "agent-real-id",
+		ParentID:  "parent",
+		Tool:      "Read",
+		Input:     `{"file_path":"/foo.go"}`,
+		Timestamp: time.Now(),
+	})
+
+	// No new node should have been created — the real session is aliased to the placeholder.
+	if _, ok := tree.Nodes["agent-real-id"]; ok {
+		t.Error("expected no separate node for real session ID — should reuse placeholder")
+	}
+
+	// The placeholder node should now carry both events: the spawn and the Read.
+	if len(placeholder.Events) != 2 {
+		t.Fatalf("expected 2 events on placeholder (spawn + Read), got %d", len(placeholder.Events))
+	}
+	if placeholder.Events[1].Tool != "Read" {
+		t.Errorf("expected second event Tool = 'Read', got %q", placeholder.Events[1].Tool)
+	}
+
+	// Parent should still have only one child (the placeholder, not a duplicate).
+	parent := tree.Nodes["parent"]
+	if len(parent.Children) != 1 {
+		t.Errorf("expected parent to have 1 child, got %d: %v", len(parent.Children), parent.Children)
+	}
+}
+
 func TestApplyEvent_NameTruncatedForLongID(t *testing.T) {
 	tree := NewTree()
 	tree.ApplyEvent(Event{Type: "Notification", SessionID: "abcdefghijklmnop", Timestamp: time.Now()})
@@ -483,6 +534,32 @@ func TestApplyEvent_PermissionRequestDoesNotChangeStatus(t *testing.T) {
 	}
 	if len(node.Events) != 1 {
 		t.Errorf("expected 1 event appended, got %d", len(node.Events))
+	}
+}
+
+func TestApplyEvent_AgentTool_SpawnedChildHasSpawnEvent(t *testing.T) {
+	tree := NewTree()
+	tree.ApplyEvent(Event{
+		Type:      "PreToolUse",
+		SessionID: "parent",
+		Tool:      "Agent",
+		ToolUseID: "tool-use-1",
+		Input:     `{"subagent_type":"general-purpose","prompt":"do something"}`,
+		Timestamp: time.Now(),
+	})
+
+	child := tree.Nodes["tool-use-1"]
+	if child == nil {
+		t.Fatal("expected child node to be created for Agent tool call")
+	}
+	if len(child.Events) != 1 {
+		t.Fatalf("expected child to have 1 event (the spawn PreToolUse), got %d", len(child.Events))
+	}
+	if child.Events[0].Tool != "Agent" {
+		t.Errorf("expected child event Tool = 'Agent', got %q", child.Events[0].Tool)
+	}
+	if child.Events[0].Input == "" {
+		t.Error("expected child event to carry the spawn Input")
 	}
 }
 

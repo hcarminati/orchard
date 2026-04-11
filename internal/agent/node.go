@@ -110,11 +110,23 @@ type Tree struct {
 	Nodes map[string]*Node
 	// Roots contains the IDs of root-level nodes, in insertion order.
 	Roots []string
+	// pendingSubagents maps a parent session ID to the ordered list of tool_use_id
+	// placeholder node IDs that have been pre-created for Agent tool calls but have
+	// not yet been claimed by an arriving subagent session.
+	pendingSubagents map[string][]string
+	// sessionAlias maps a real subagent session ID to the tool_use_id placeholder
+	// node ID it was matched to, so subsequent events for that session are routed
+	// to the correct (already-visible) node.
+	sessionAlias map[string]string
 }
 
 // NewTree returns an empty, ready-to-use Tree.
 func NewTree() Tree {
-	return Tree{Nodes: make(map[string]*Node)}
+	return Tree{
+		Nodes:            make(map[string]*Node),
+		pendingSubagents: make(map[string][]string),
+		sessionAlias:     make(map[string]string),
+	}
 }
 
 // AddNode inserts n into the tree.
@@ -146,20 +158,44 @@ func (t *Tree) AddNode(n Node) {
 // When Stop fires on the parent session, all Running child subagent nodes are
 // marked Done since the turn has ended and they must have completed.
 func (t *Tree) ApplyEvent(e Event) {
-	node, exists := t.Nodes[e.SessionID]
+	// If this session ID has been aliased to a pre-created placeholder node
+	// (because the subagent's real session ID arrived after the tool_use_id
+	// placeholder was created), route all events to that placeholder node.
+	nodeID := e.SessionID
+	if alias, ok := t.sessionAlias[e.SessionID]; ok {
+		nodeID = alias
+	}
+
+	node, exists := t.Nodes[nodeID]
 	if !exists {
-		name := e.SessionID
-		if len(name) > 8 {
-			name = "session:" + name[:8]
+		// Check whether a pre-created placeholder is waiting for this subagent.
+		// When a PreToolUse[Agent] fires we create a child keyed by tool_use_id and
+		// enqueue it under the parent's session ID. The first live event from the
+		// real subagent session claims that placeholder so only one node is shown.
+		if e.ParentID != "" {
+			if pending := t.pendingSubagents[e.ParentID]; len(pending) > 0 {
+				placeholderID := pending[0]
+				t.pendingSubagents[e.ParentID] = pending[1:]
+				t.sessionAlias[e.SessionID] = placeholderID
+				nodeID = placeholderID
+				node = t.Nodes[placeholderID]
+				exists = true
+			}
 		}
-		n := Node{
-			ID:       e.SessionID,
-			ParentID: e.ParentID,
-			Name:     name,
-			Status:   StatusRunning,
+		if !exists {
+			name := e.SessionID
+			if len(name) > 8 {
+				name = "session:" + name[:8]
+			}
+			n := Node{
+				ID:       e.SessionID,
+				ParentID: e.ParentID,
+				Name:     name,
+				Status:   StatusRunning,
+			}
+			t.AddNode(n)
+			node = t.Nodes[e.SessionID]
 		}
-		t.AddNode(n)
-		node = t.Nodes[e.SessionID]
 	}
 
 	node.Events = append(node.Events, e)
@@ -213,8 +249,13 @@ func (t *Tree) ApplyEvent(e Event) {
 				Children: []string{},
 				Tools:    []string{},
 				Skills:   []string{},
+				Events:   []Event{e},
 			}
 			t.AddNode(child)
+			// Enqueue as a pending placeholder so the first real event from
+			// the subagent's own session claims this node instead of creating
+			// a duplicate.
+			t.pendingSubagents[e.SessionID] = append(t.pendingSubagents[e.SessionID], e.ToolUseID)
 		}
 	case "Error":
 		node.Status = StatusError
