@@ -26,6 +26,8 @@ var (
 )
 
 // toolColor returns the label color for a tool name in the Events panel.
+// Unknown tools fall back to colorFg so unrecognized names render in plain
+// primary text rather than disappearing into the muted background.
 func toolColor(tool string) lipgloss.Color {
 	switch tool {
 	case "Bash":
@@ -34,14 +36,17 @@ func toolColor(tool string) lipgloss.Color {
 		return colorBlue
 	case "Edit", "Write":
 		return colorCoral
-	case "Grep", "Glob":
+	case "Grep", "Glob", "ToolSearch", "WebSearch":
 		return colorTeal
-	case "Agent":
+	case "Agent", "TaskCreate", "TaskUpdate":
 		return colorAccent
 	case "Skill":
 		return colorGreen
 	default:
-		return colorMuted
+		if strings.HasPrefix(tool, "mcp__") {
+			return colorBlue
+		}
+		return colorFg
 	}
 }
 

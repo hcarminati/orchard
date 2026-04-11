@@ -321,7 +321,11 @@ func TestToolColor_KnownTools(t *testing.T) {
 		{"Write", colorCoral},
 		{"Grep", colorTeal},
 		{"Glob", colorTeal},
+		{"ToolSearch", colorTeal},
+		{"WebSearch", colorTeal},
 		{"Agent", colorAccent},
+		{"TaskCreate", colorAccent},
+		{"TaskUpdate", colorAccent},
 		{"Skill", colorGreen},
 	}
 	for _, tc := range cases {
@@ -332,10 +336,20 @@ func TestToolColor_KnownTools(t *testing.T) {
 	}
 }
 
-func TestToolColor_UnknownTool_ReturnsMuted(t *testing.T) {
-	got := toolColor("SomeUnknownTool")
-	if got != colorMuted {
-		t.Errorf("expected colorMuted for unknown tool, got %q", got)
+func TestToolColor_MCP_ReturnsBlue(t *testing.T) {
+	cases := []string{"mcp__figma__get_design", "mcp__slack__send_message", "mcp__plugin_figma_figma__whoami"}
+	for _, tool := range cases {
+		got := toolColor(tool)
+		if got != colorBlue {
+			t.Errorf("toolColor(%q) = %q, want colorBlue", tool, got)
+		}
+	}
+}
+
+func TestToolColor_UnknownTool_ReturnsFg(t *testing.T) {
+	got := toolColor("SomeUnrecognizedTool")
+	if got != colorFg {
+		t.Errorf("expected colorFg for unknown tool, got %q", got)
 	}
 }
 
