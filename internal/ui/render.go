@@ -16,11 +16,34 @@ import (
 var (
 	colorAccent = lipgloss.Color("#7C3AED") // violet — used for active panel border and title
 	colorMuted  = lipgloss.Color("#6B7280") // gray — used for inactive elements and descriptions
-	colorGreen  = lipgloss.Color("#10B981") // green — running agent status dot
-	colorYellow = lipgloss.Color("#F59E0B") // yellow — idle agent status dot
+	colorGreen  = lipgloss.Color("#10B981") // green — running agent status dot / Skill tool label
+	colorYellow = lipgloss.Color("#F59E0B") // yellow — idle agent status dot / Bash tool label
 	colorRed    = lipgloss.Color("#EF4444") // red — error agent status dot
-	colorFg     = lipgloss.Color("#F9FAFB") // near-white — primary text
+	colorFg     = lipgloss.Color("#F9FAFB") // near-white — primary text / Notification label
+	colorBlue   = lipgloss.Color("#3B82F6") // blue — Read / WebFetch tool label
+	colorCoral  = lipgloss.Color("#F87171") // coral — Edit / Write tool label
+	colorTeal   = lipgloss.Color("#14B8A6") // teal — Grep / Glob tool label
 )
+
+// toolColor returns the label color for a tool name in the Events panel.
+func toolColor(tool string) lipgloss.Color {
+	switch tool {
+	case "Bash":
+		return colorYellow
+	case "Read", "WebFetch":
+		return colorBlue
+	case "Edit", "Write":
+		return colorCoral
+	case "Grep", "Glob":
+		return colorTeal
+	case "Agent":
+		return colorAccent
+	case "Skill":
+		return colorGreen
+	default:
+		return colorMuted
+	}
+}
 
 // renderFooter builds the bottom keybindings bar.
 func (m Model) renderFooter() string {
@@ -357,7 +380,6 @@ func (m Model) eventsContent() string {
 	}
 
 	tsStyle := lipgloss.NewStyle().Foreground(colorMuted)
-	toolStyle := lipgloss.NewStyle().Foreground(colorAccent)
 	mutedStyle := lipgloss.NewStyle().Foreground(colorMuted)
 	cursorStyle := lipgloss.NewStyle().Foreground(colorAccent)
 	borderStyle := lipgloss.NewStyle().Foreground(colorAccent)
@@ -376,7 +398,18 @@ func (m Model) eventsContent() string {
 
 		warningStyle := lipgloss.NewStyle().Foreground(colorYellow)
 		ts := tsStyle.Render(e.Timestamp.Format("Jan 02 15:04:05"))
-		header := prefix + ts + "  " + e.Type
+
+		// Event type label: Notification is bright, Stop/SubagentStop dimmed, rest muted.
+		var typeColor lipgloss.Color
+		switch e.Type {
+		case "Notification":
+			typeColor = colorFg
+		case "Stop", "SubagentStop":
+			typeColor = colorMuted
+		default:
+			typeColor = colorMuted
+		}
+		header := prefix + ts + "  " + lipgloss.NewStyle().Foreground(typeColor).Render(e.Type)
 
 		switch e.Type {
 		case "Notification":
@@ -403,7 +436,7 @@ func (m Model) eventsContent() string {
 			}
 		default:
 			if e.Tool != "" {
-				header += "  " + toolStyle.Render(e.Tool)
+				header += "  " + lipgloss.NewStyle().Foreground(toolColor(e.Tool)).Render(e.Tool)
 			}
 			if isToolEvent(e) {
 				if expanded {

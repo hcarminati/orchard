@@ -307,6 +307,38 @@ func TestView_AgentToolCall_ChildNamedAfterSubagentType(t *testing.T) {
 	}
 }
 
+// --- toolColor ---
+
+func TestToolColor_KnownTools(t *testing.T) {
+	cases := []struct {
+		tool string
+		want lipgloss.Color
+	}{
+		{"Bash", colorYellow},
+		{"Read", colorBlue},
+		{"WebFetch", colorBlue},
+		{"Edit", colorCoral},
+		{"Write", colorCoral},
+		{"Grep", colorTeal},
+		{"Glob", colorTeal},
+		{"Agent", colorAccent},
+		{"Skill", colorGreen},
+	}
+	for _, tc := range cases {
+		got := toolColor(tc.tool)
+		if got != tc.want {
+			t.Errorf("toolColor(%q) = %q, want %q", tc.tool, got, tc.want)
+		}
+	}
+}
+
+func TestToolColor_UnknownTool_ReturnsMuted(t *testing.T) {
+	got := toolColor("SomeUnknownTool")
+	if got != colorMuted {
+		t.Errorf("expected colorMuted for unknown tool, got %q", got)
+	}
+}
+
 // --- permissionPreview ---
 
 func TestPermissionPreview_Bash_ExtractsCommand(t *testing.T) {
