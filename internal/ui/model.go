@@ -525,20 +525,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case " ":
-			vn := m.visibleNodes()
-			if m.cursor < len(vn) {
-				entry := vn[m.cursor]
-				if entry.groupID != "" {
-					m.collapsedGroups[entry.groupID] = !m.collapsedGroups[entry.groupID]
-				} else if node := m.agents.Nodes[entry.id]; node != nil && len(node.Children) > 0 {
-					m.collapsed[entry.id] = !m.collapsed[entry.id]
+			if m.activePanel == panelEvents {
+				// Toggle inline expand/collapse for the focused event row.
+				node := m.focusedNode()
+				if node != nil && m.eventCursor < len(node.Events) && isToolEvent(node.Events[m.eventCursor]) {
+					key := eventKey(node.ID, m.eventCursor)
+					m.expandedEvents[key] = !m.expandedEvents[key]
 				}
+			} else {
+				vn := m.visibleNodes()
+				if m.cursor < len(vn) {
+					entry := vn[m.cursor]
+					if entry.groupID != "" {
+						m.collapsedGroups[entry.groupID] = !m.collapsedGroups[entry.groupID]
+					} else if node := m.agents.Nodes[entry.id]; node != nil && len(node.Children) > 0 {
+						m.collapsed[entry.id] = !m.collapsed[entry.id]
+					}
+				}
+				// Clamp cursor and scroll: collapsing may shrink the visible list.
+				if newLen := len(m.visibleNodes()); m.cursor >= newLen {
+					m.cursor = max(0, newLen-1)
+				}
+				m.clampScroll()
 			}
-			// Clamp cursor and scroll: collapsing may shrink the visible list.
-			if newLen := len(m.visibleNodes()); m.cursor >= newLen {
-				m.cursor = max(0, newLen-1)
-			}
-			m.clampScroll()
 		case "[":
 			n := len(rightTabs)
 			m.activeRightTab = (m.activeRightTab - 1 + n) % n
