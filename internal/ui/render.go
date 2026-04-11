@@ -59,6 +59,29 @@ func (m Model) renderFooter() string {
 		return k + d
 	}
 
+	// Confirmation prompt replaces the normal bar while awaiting hide confirmation.
+	if m.confirmHide != "" {
+		label := m.confirmHide
+		if len(label) > 8 {
+			label = label[:8]
+		}
+		prompt := lipgloss.NewStyle().Foreground(colorFg).Render("Hide session:"+label+" from view?") +
+			lipgloss.NewStyle().Foreground(colorMuted).Render("  ") +
+			lipgloss.NewStyle().Bold(true).Foreground(colorYellow).Render("[y]") +
+			lipgloss.NewStyle().Foreground(colorMuted).Render(" yes  ") +
+			lipgloss.NewStyle().Bold(true).Foreground(colorFg).Render("[N]") +
+			lipgloss.NewStyle().Foreground(colorMuted).Render(" cancel")
+		gap := max(0, m.width-lipgloss.Width(prompt))
+		return " " + prompt + strings.Repeat(" ", gap)
+	}
+
+	// Transient status message (e.g. "Cannot hide active session").
+	if m.hideStatusMsg != "" {
+		msg := lipgloss.NewStyle().Foreground(colorYellow).Render(m.hideStatusMsg)
+		gap := max(0, m.width-lipgloss.Width(msg)-1)
+		return " " + msg + strings.Repeat(" ", gap)
+	}
+
 	content := " " + bind("j/k", "navigate")
 	if m.cursorHasChildren() {
 		content += bind("space", "expand/collapse")
@@ -71,6 +94,27 @@ func (m Model) renderFooter() string {
 		content += bind("[/]", "switch tab")
 	}
 	content += bind("tab", "switch panel") + bind("q", "quit")
+
+	// [d] hide — only for top-level non-running nodes in the agents panel, outside hidden view.
+	if m.activePanel == panelAgents && m.statusFilter != filterHidden {
+		vn := m.visibleNodes()
+		if m.cursor < len(vn) {
+			entry := vn[m.cursor]
+			if entry.depth == 0 && entry.groupID == "" && m.agents.Nodes[entry.id] != nil {
+				if m.effectiveStatus(entry.id) != agent.StatusRunning {
+					content += bind("[d]", "hide")
+				}
+			}
+		}
+	}
+
+	// [r] restore — only in the hidden filter view.
+	if m.activePanel == panelAgents && m.statusFilter == filterHidden {
+		vn := m.visibleNodes()
+		if m.cursor < len(vn) {
+			content += bind("[r]", "restore")
+		}
+	}
 
 	// Pad to full width so the footer bar extends across the whole terminal.
 	gap := max(0, m.width-lipgloss.Width(content))
@@ -88,7 +132,13 @@ func (m Model) renderBody(height int) string {
 	if leftActive {
 		leftBorderColor = colorAccent
 	}
-	agentCount := lipgloss.NewStyle().Foreground(leftBorderColor).Render(fmt.Sprintf(" · %d", len(m.agents.Nodes)))
+	visibleCount := 0
+	for _, v := range m.visibleNodes() {
+		if v.id != "" { // skip virtual group header rows
+			visibleCount++
+		}
+	}
+	agentCount := lipgloss.NewStyle().Foreground(leftBorderColor).Render(fmt.Sprintf(" · %d", visibleCount))
 	agentsTitle := lipgloss.NewStyle().Bold(true).Foreground(leftBorderColor).Render("Agents") + agentCount
 	left := m.renderPanel(agentsTitle, m.agentsContent(), leftW, height, leftActive)
 

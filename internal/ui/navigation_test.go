@@ -16,7 +16,7 @@ func TestUpdate_JKNavigation(t *testing.T) {
 		{ID: "b", Name: "agent-b", Status: agent.StatusRunning},
 		{ID: "c", Name: "agent-c", Status: agent.StatusRunning},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	if m.cursor != 0 {
 		t.Errorf("expected initial cursor 0, got %d", m.cursor)
 	}
@@ -47,7 +47,7 @@ func TestUpdate_KAtTopBoundary(t *testing.T) {
 	nodes := []agent.Node{
 		{ID: "a", Name: "agent-a", Status: agent.StatusRunning},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
 	if next.(Model).cursor != 0 {
 		t.Errorf("expected cursor to stay at 0 at top boundary, got %d", next.(Model).cursor)
@@ -58,7 +58,7 @@ func TestUpdate_EnterOnUngroupedNode_NoEffect(t *testing.T) {
 	nodes := []agent.Node{
 		{ID: "x", Name: "solo", Status: agent.StatusRunning},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	got := next.(Model)
 	if got.agents.Nodes["x"].Winner {
@@ -73,7 +73,7 @@ func TestVisibleNodes_FlatTree(t *testing.T) {
 		{ID: "x", Name: "x", Status: agent.StatusRunning},
 		{ID: "y", Name: "y", Status: agent.StatusRunning},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	vn := m.visibleNodes()
 	if len(vn) != 2 {
 		t.Fatalf("expected 2 visible nodes, got %d", len(vn))

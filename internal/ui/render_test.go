@@ -58,7 +58,7 @@ func TestView_ErroredNodeAtTop(t *testing.T) {
 		{ID: "a", Name: "agent-ok", Status: agent.StatusRunning},
 		{ID: "b", Name: "agent-err", Status: agent.StatusError, ErrorMsg: "something broke"},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	view := next.(Model).View()
 
@@ -79,7 +79,7 @@ func TestView_ErrorMessageInline(t *testing.T) {
 	nodes := []agent.Node{
 		{ID: "a", Name: "agent-err", Status: agent.StatusError, ErrorMsg: "panic"},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	view := next.(Model).View()
 
@@ -92,7 +92,7 @@ func TestView_NoErrorMessage_WhenErrorMsgEmpty(t *testing.T) {
 	nodes := []agent.Node{
 		{ID: "a", Name: "agent-err", Status: agent.StatusError, ErrorMsg: ""},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	view := next.(Model).View()
 
@@ -108,7 +108,7 @@ func TestSortedRoots_ErroredFirst(t *testing.T) {
 		{ID: "c", Status: agent.StatusIdle},
 		{ID: "d", Status: agent.StatusError},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	sr := m.sortedRoots()
 
 	if len(sr) != 4 {
@@ -130,7 +130,7 @@ func TestSortedRoots_ErroredFirst(t *testing.T) {
 
 func TestView_HookError_ErroredNodeAtTop(t *testing.T) {
 	ch := make(chan agent.Event, 10)
-	m := New(nil, ch)
+	m := New(nil, ch, nil)
 
 	next, _ := m.Update(hookEventMsg{event: agent.Event{Type: "PreToolUse", SessionID: "s1", Timestamp: time.Now()}})
 	next, _ = next.Update(hookEventMsg{event: agent.Event{Type: "PreToolUse", SessionID: "s2", Timestamp: time.Now()}})
@@ -220,7 +220,7 @@ func TestEventsPanel_SpawnContextHeader_ShownForChildNode(t *testing.T) {
 		Prompt:   "find all Go files",
 		Status:   agent.StatusDone,
 	}
-	m := New([]agent.Node{parent, child}, nil)
+	m := New([]agent.Node{parent, child}, nil, nil)
 	// Navigate to child node (cursor=1 after parent).
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
@@ -239,7 +239,7 @@ func TestEventsPanel_SpawnContextHeader_ShownForChildNode(t *testing.T) {
 
 func TestEventsPanel_SpawnContextHeader_NotShownForParentNode(t *testing.T) {
 	parent := agent.Node{ID: "parent-abc123", Name: "session:parent-a", Status: agent.StatusDone}
-	m := New([]agent.Node{parent}, nil)
+	m := New([]agent.Node{parent}, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	view := next.(Model).View()
 
@@ -257,7 +257,7 @@ func TestEventsPanel_SpawnContextHeader_TruncatesLongPrompt(t *testing.T) {
 		Prompt:   strings.Repeat("a", 100),
 		Status:   agent.StatusDone,
 	}
-	m := New([]agent.Node{parent, child}, nil)
+	m := New([]agent.Node{parent, child}, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	view := next.(Model).View()
@@ -280,7 +280,7 @@ func TestView_ChildNode_ShowsConnector(t *testing.T) {
 
 func TestView_AgentToolCall_ChildNamedAfterSubagentType(t *testing.T) {
 	ch := make(chan agent.Event, 10)
-	m := New(nil, ch)
+	m := New(nil, ch, nil)
 
 	// Parent session appears.
 	next, _ := m.Update(hookEventMsg{event: agent.Event{

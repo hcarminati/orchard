@@ -10,7 +10,7 @@ import (
 )
 
 func TestUpdate_FilterCyclesMode(t *testing.T) {
-	m := New(nil, nil)
+	m := New(nil, nil, nil)
 	if m.statusFilter != filterAll {
 		t.Fatalf("expected initial filter to be filterAll, got %d", m.statusFilter)
 	}
@@ -29,8 +29,14 @@ func TestUpdate_FilterCyclesMode(t *testing.T) {
 
 	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
 	got = next.(Model)
+	if got.statusFilter != filterHidden {
+		t.Errorf("after third f: expected filterHidden, got %d", got.statusFilter)
+	}
+
+	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
+	got = next.(Model)
 	if got.statusFilter != filterAll {
-		t.Errorf("after third f: expected filterAll (wrap), got %d", got.statusFilter)
+		t.Errorf("after fourth f: expected filterAll (wrap), got %d", got.statusFilter)
 	}
 }
 
@@ -40,7 +46,7 @@ func TestUpdate_FilterResetsCursorToZero(t *testing.T) {
 		{ID: "b", Name: "agent-b", Status: agent.StatusRunning},
 		{ID: "c", Name: "agent-c", Status: agent.StatusRunning},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 
 	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
@@ -61,7 +67,7 @@ func TestFilter_RunningHidesNonRunningNodes(t *testing.T) {
 		{ID: "c", Name: "agent-c", Status: agent.StatusError},
 		{ID: "d", Name: "agent-d", Status: agent.StatusRunning},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	m.statusFilter = filterRunning
 
 	vn := m.visibleNodes()
@@ -85,7 +91,7 @@ func TestFilter_ErroredHidesNonErroredNodes(t *testing.T) {
 		{ID: "b", Name: "agent-b", Status: agent.StatusError},
 		{ID: "c", Name: "agent-c", Status: agent.StatusIdle},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	m.statusFilter = filterErrored
 
 	vn := m.visibleNodes()
@@ -104,7 +110,7 @@ func TestFilter_AllShowsEveryNode(t *testing.T) {
 		{ID: "c", Status: agent.StatusDone},
 		{ID: "d", Status: agent.StatusError},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	m.statusFilter = filterAll
 
 	vn := m.visibleNodes()
@@ -118,7 +124,7 @@ func TestFilter_HiddenNodesAbsentFromView(t *testing.T) {
 		{ID: "a", Name: "running-agent", Status: agent.StatusRunning},
 		{ID: "b", Name: "idle-agent", Status: agent.StatusIdle},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
 	view := next.(Model).View()
@@ -132,7 +138,7 @@ func TestFilter_HiddenNodesAbsentFromView(t *testing.T) {
 }
 
 func TestFilter_FooterShowsCurrentMode(t *testing.T) {
-	m := New(nil, nil)
+	m := New(nil, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 
 	view := next.(Model).View()
@@ -150,5 +156,158 @@ func TestFilter_FooterShowsCurrentMode(t *testing.T) {
 	view = next.(Model).View()
 	if !strings.Contains(view, "filter:errored") {
 		t.Errorf("expected 'filter:errored' in footer after second f, got:\n%s", view)
+	}
+
+	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
+	view = next.(Model).View()
+	if !strings.Contains(view, "filter:hidden") {
+		t.Errorf("expected 'filter:hidden' in footer after third f, got:\n%s", view)
+	}
+}
+
+func TestHide_ConfirmPromptAppearsOnD(t *testing.T) {
+	nodes := []agent.Node{
+		{ID: "sess-abc123", Name: "session:sessabc1", Status: agent.StatusDone},
+	}
+	m := New(nodes, nil, nil)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = next.(Model)
+
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	m = next.(Model)
+
+	if m.confirmHide == "" {
+		t.Fatal("expected confirmHide to be set after pressing d on a top-level done session")
+	}
+	view := m.View()
+	if !strings.Contains(view, "Hide session:") {
+		t.Errorf("expected confirmation prompt in footer, got:\n%s", view)
+	}
+}
+
+func TestHide_YConfirmsHide(t *testing.T) {
+	nodes := []agent.Node{
+		{ID: "sess-abc123", Name: "session:sessabc1", Status: agent.StatusDone},
+	}
+	m := New(nodes, nil, nil)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = next.(Model)
+
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	m = next.(Model)
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	m = next.(Model)
+
+	if !m.hiddenSessions["sess-abc123"] {
+		t.Error("expected session to be in hiddenSessions after y confirmation")
+	}
+	if m.confirmHide != "" {
+		t.Error("expected confirmHide to be cleared after confirmation")
+	}
+	vn := m.visibleNodes()
+	for _, v := range vn {
+		if v.id == "sess-abc123" {
+			t.Error("expected hidden session to be absent from visibleNodes")
+		}
+	}
+}
+
+func TestHide_NonYCancels(t *testing.T) {
+	nodes := []agent.Node{
+		{ID: "sess-abc123", Name: "session:sessabc1", Status: agent.StatusDone},
+	}
+	m := New(nodes, nil, nil)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = next.(Model)
+
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	m = next.(Model)
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = next.(Model)
+
+	if m.hiddenSessions["sess-abc123"] {
+		t.Error("expected session to NOT be hidden after esc cancel")
+	}
+	if m.confirmHide != "" {
+		t.Error("expected confirmHide to be cleared after cancel")
+	}
+}
+
+func TestHide_RunningSessionShowsStatusMsg(t *testing.T) {
+	nodes := []agent.Node{
+		{ID: "sess-run", Name: "session:sess-run", Status: agent.StatusRunning},
+	}
+	m := New(nodes, nil, nil)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = next.(Model)
+
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	m = next.(Model)
+
+	if m.confirmHide != "" {
+		t.Error("expected no confirmation prompt for running session")
+	}
+	if m.hideStatusMsg == "" {
+		t.Error("expected status message for cannot-hide-running case")
+	}
+	view := m.View()
+	if !strings.Contains(view, "Cannot hide active session") {
+		t.Errorf("expected status message in footer, got:\n%s", view)
+	}
+}
+
+func TestHide_RestoreViaR(t *testing.T) {
+	nodes := []agent.Node{
+		{ID: "sess-abc123", Name: "session:sessabc1", Status: agent.StatusDone},
+	}
+	hidden := map[string]bool{"sess-abc123": true}
+	m := New(nodes, nil, hidden)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = next.(Model)
+
+	// Cycle to hidden filter view.
+	for i := 0; i < 3; i++ {
+		next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
+		m = next.(Model)
+	}
+	if m.statusFilter != filterHidden {
+		t.Fatalf("expected filterHidden, got %d", m.statusFilter)
+	}
+
+	// The hidden session should be visible in this view.
+	vn := m.visibleNodes()
+	if len(vn) == 0 || vn[0].id != "sess-abc123" {
+		t.Fatal("expected hidden session visible in filterHidden view")
+	}
+
+	// Press r to restore.
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	m = next.(Model)
+
+	if m.hiddenSessions["sess-abc123"] {
+		t.Error("expected session removed from hiddenSessions after r")
+	}
+}
+
+func TestHide_ChildNodeCannotBeHidden(t *testing.T) {
+	nodes := []agent.Node{
+		{ID: "parent", Name: "session:parent", Status: agent.StatusDone},
+		{ID: "child", Name: "child-agent", ParentID: "parent", Status: agent.StatusDone},
+	}
+	m := New(nodes, nil, nil)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = next.(Model)
+
+	// Navigate to child node (j moves cursor down).
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	m = next.(Model)
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	m = next.(Model)
+
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	m = next.(Model)
+
+	if m.confirmHide != "" {
+		t.Error("expected no confirmation prompt when pressing d on a child node")
 	}
 }

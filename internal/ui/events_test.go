@@ -27,7 +27,7 @@ func TestEventsContent_NoEvents_ShowsEmptyState(t *testing.T) {
 	nodes := []agent.Node{
 		{ID: "s1xxxxxxxx", Name: "session:s1xxxxxx", Status: agent.StatusRunning},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	content := next.(Model).eventsContent()
 	if !strings.Contains(content, "No events yet") {
@@ -47,7 +47,7 @@ func TestEventsContent_ShowsTimestampAndType(t *testing.T) {
 			},
 		},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	content := next.(Model).eventsContent()
 
@@ -73,7 +73,7 @@ func TestEventsContent_NoToolName_WhenEventHasNone(t *testing.T) {
 			},
 		},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	content := next.(Model).eventsContent()
 
@@ -94,7 +94,7 @@ func TestEventsContent_NoFocusedAgent_ShowsPrompt(t *testing.T) {
 }
 
 func TestUpdate_JMovesCursor_WhenEventsPanelActive(t *testing.T) {
-	m := New([]agent.Node{makeNodeWithEvents("s1xxxxxxxx", 50)}, nil)
+	m := New([]agent.Node{makeNodeWithEvents("s1xxxxxxxx", 50)}, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = next.(Model)
 
@@ -118,7 +118,7 @@ func TestUpdate_JMovesCursor_WhenEventsPanelActive(t *testing.T) {
 }
 
 func TestUpdate_KDoesNotGoNegative_WhenEventsPanelActive(t *testing.T) {
-	m := New([]agent.Node{makeNodeWithEvents("s1xxxxxxxx", 5)}, nil)
+	m := New([]agent.Node{makeNodeWithEvents("s1xxxxxxxx", 5)}, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = next.(Model)
 
@@ -143,7 +143,7 @@ func TestUpdate_JK_AgentsPanel_DoesNotScrollEvents(t *testing.T) {
 		makeNodeWithEvents("s1xxxxxxxx", 5),
 		{ID: "s2xxxxxxxx", Name: "session:s2xxxxxx", Status: agent.StatusRunning},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = next.(Model)
 
@@ -167,7 +167,7 @@ func TestUpdate_SwitchingAgent_ResetsEventScroll(t *testing.T) {
 		makeNodeWithEvents("s1xxxxxxxx", 50),
 		{ID: "s2xxxxxxxx", Name: "session:s2xxxxxx", Status: agent.StatusRunning},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = next.(Model)
 
@@ -204,7 +204,7 @@ func TestEventsContent_ScrollApplied(t *testing.T) {
 		{ID: "s1xxxxxxxx", Name: "session:s1xxxxxx", Status: agent.StatusRunning, Events: events},
 	}
 	// height=6 → viewH=3; with 5 events maxStart=2, so scrolling is meaningful.
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 6})
 	m = next.(Model)
 
@@ -236,7 +236,7 @@ func TestEventsContent_AppearsInView(t *testing.T) {
 			},
 		},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	view := next.(Model).View()
 
@@ -253,7 +253,7 @@ func TestFocusedNode_GroupHeader_ReturnsNil(t *testing.T) {
 		{ID: "s1xxxxxxxx", Name: "session:s1xxxxxx", Status: agent.StatusRunning, GroupID: "g1"},
 		{ID: "s2xxxxxxxx", Name: "session:s2xxxxxx", Status: agent.StatusRunning, GroupID: "g1"},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = next.(Model)
 
@@ -266,7 +266,7 @@ func TestFocusedNode_ReturnsCorrectNode(t *testing.T) {
 	nodes := []agent.Node{
 		{ID: "s1xxxxxxxx", Name: "session:s1xxxxxx", Status: agent.StatusRunning},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = next.(Model)
 
@@ -281,7 +281,7 @@ func TestFocusedNode_ReturnsCorrectNode(t *testing.T) {
 
 func TestClampEventScroll_ClampsToMax(t *testing.T) {
 	node := makeNodeWithEvents("s1xxxxxxxx", 5)
-	m := New([]agent.Node{node}, nil)
+	m := New([]agent.Node{node}, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = next.(Model)
 
@@ -312,7 +312,7 @@ func TestEventsContent_LipglossWidth_NotLen(t *testing.T) {
 			},
 		},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 40, Height: 10})
 	content := next.(Model).eventsContent()
 	if content == "" {
@@ -345,7 +345,7 @@ func TestEventsContent_CollapsedToolEvent_ShowsTruncatedInput(t *testing.T) {
 			},
 		},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	content := next.(Model).eventsContent()
 
@@ -380,7 +380,7 @@ func TestEventsContent_ExpandedToolEvent_ShowsFullInputAndOutput(t *testing.T) {
 			},
 		},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = next.(Model)
 
@@ -421,7 +421,7 @@ func TestEventsContent_ClickTogglesExpand(t *testing.T) {
 			},
 		},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = next.(Model)
 
@@ -460,7 +460,7 @@ func TestEventsContent_NonToolEvent_ClickDoesNotExpandInline(t *testing.T) {
 			},
 		},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = next.(Model)
 
@@ -487,7 +487,7 @@ func TestEventsContent_NotificationShowsArrowAndMessage(t *testing.T) {
 			},
 		},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	content := next.(Model).eventsContent()
 
@@ -514,7 +514,7 @@ func TestEventsContent_NotificationLongMessage_TruncatedAt40(t *testing.T) {
 			},
 		},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	// Wide terminal so panel width doesn't interfere with the 40-char truncation check.
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 300, Height: 40})
 	content := next.(Model).eventsContent()
@@ -539,7 +539,7 @@ func TestEventsContent_NotificationEmptyMessage_ShowsType(t *testing.T) {
 			},
 		},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	content := next.(Model).eventsContent()
 
@@ -621,7 +621,7 @@ func TestEventsContent_AbsorbedPermission_HidesPermissionRow(t *testing.T) {
 			},
 		},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	content := next.(Model).eventsContent()
 
@@ -652,7 +652,7 @@ func TestEventsContent_AbsorbedPermission_ShowsPreview(t *testing.T) {
 			},
 		},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 200, Height: 40})
 	content := next.(Model).eventsContent()
 
@@ -674,7 +674,7 @@ func TestEventsContent_NonMatchingPermission_ShowsBothRows(t *testing.T) {
 			},
 		},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	content := next.(Model).eventsContent()
 
@@ -697,7 +697,7 @@ func TestEventsContent_Notification_Expandable(t *testing.T) {
 			},
 		},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = next.(Model)
 
@@ -726,7 +726,7 @@ func TestEventsContent_Notification_ExpandedShowsDownArrow(t *testing.T) {
 			},
 		},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = next.(Model)
 
@@ -762,7 +762,7 @@ func TestEventsContent_Notification_EnterOpensModal(t *testing.T) {
 			},
 		},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = next.(Model)
 
@@ -794,7 +794,7 @@ func TestEventsContent_PermissionRequestShowsWarningAndTool(t *testing.T) {
 			},
 		},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	content := next.(Model).eventsContent()
 
@@ -820,7 +820,7 @@ func TestEventsContent_PermissionRequestNoTool_FallsBackToMessage(t *testing.T) 
 			},
 		},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	content := next.(Model).eventsContent()
 
@@ -849,7 +849,7 @@ func TestEventsContent_PermissionRequest_Expandable(t *testing.T) {
 			},
 		},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = next.(Model)
 
@@ -884,7 +884,7 @@ func TestEventsContent_PermissionRequest_Bash_ShowsCommand(t *testing.T) {
 			},
 		},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	content := next.(Model).eventsContent()
 
@@ -917,7 +917,7 @@ func TestEventsContent_PermissionRequest_Read_ShowsFilePathWithTilde(t *testing.
 			},
 		},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 200, Height: 40})
 	content := next.(Model).eventsContent()
 
@@ -943,7 +943,7 @@ func TestEventsContent_PermissionRequest_Write_ShowsFilePath(t *testing.T) {
 			},
 		},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	content := next.(Model).eventsContent()
 
@@ -969,7 +969,7 @@ func TestEventsContent_PermissionRequest_UnknownTool_ShowsTruncatedInput(t *test
 			},
 		},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 300, Height: 40})
 	content := next.(Model).eventsContent()
 
@@ -1001,7 +1001,7 @@ func TestEventsContent_ExpandedLongInput_LineWrapped(t *testing.T) {
 			},
 		},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 40})
 	m = next.(Model)
 
@@ -1040,7 +1040,7 @@ func makeModalModel(eventType, tool, input, response, message string) Model {
 	nodes := []agent.Node{
 		{ID: "s1xxxxxxxx", Name: "session:s1xxxxxx", Status: agent.StatusRunning, Events: []agent.Event{e}},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	return next.(Model)
 }
@@ -1125,7 +1125,7 @@ func TestModal_NavigatesRight(t *testing.T) {
 			},
 		},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = next.(Model)
 	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
@@ -1162,7 +1162,7 @@ func TestModal_NavigatesLeft(t *testing.T) {
 			},
 		},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = next.(Model)
 	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
@@ -1217,7 +1217,7 @@ func TestModal_PositionCounter(t *testing.T) {
 			},
 		},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = next.(Model)
 	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
@@ -1245,7 +1245,7 @@ func TestModal_PermissionRequestShowsWarningHeader(t *testing.T) {
 				{Type: "PermissionRequest", Tool: "Bash", Input: `{"command":"rm -rf /"}`, SessionID: "s1xxxxxxxx", Timestamp: time.Now()},
 			},
 		},
-	}, nil)
+	}, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = next.(Model)
 	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
@@ -1280,7 +1280,7 @@ func TestModal_StopShowsDuration(t *testing.T) {
 			},
 		},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = next.(Model)
 

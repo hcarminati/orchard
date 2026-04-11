@@ -15,7 +15,7 @@ func TestView_GroupLabel_ShowsCorrectCount(t *testing.T) {
 		{ID: "b", Name: "agent-b", GroupID: "g1", Status: agent.StatusRunning},
 		{ID: "c", Name: "agent-c", GroupID: "g1", Status: agent.StatusRunning},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	view := next.(Model).View()
 	if !strings.Contains(view, "parallel × 3") {
@@ -28,7 +28,7 @@ func TestView_GroupLabel_TwoMembers(t *testing.T) {
 		{ID: "a", Name: "agent-a", GroupID: "g1", Status: agent.StatusRunning},
 		{ID: "b", Name: "agent-b", GroupID: "g1", Status: agent.StatusIdle},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	view := next.(Model).View()
 	if !strings.Contains(view, "parallel × 2") {
@@ -41,7 +41,7 @@ func TestView_WinnerMarked_ShowsCheckmark(t *testing.T) {
 		{ID: "a", Name: "agent-a", GroupID: "g1", Status: agent.StatusRunning},
 		{ID: "b", Name: "agent-b", GroupID: "g1", Status: agent.StatusRunning},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -56,7 +56,7 @@ func TestUpdate_EnterMarksWinner_ClearsOtherSiblings(t *testing.T) {
 		{ID: "a", Name: "agent-a", GroupID: "g1", Status: agent.StatusRunning},
 		{ID: "b", Name: "agent-b", GroupID: "g1", Status: agent.StatusRunning},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	got := next.(Model)
@@ -84,7 +84,7 @@ func TestView_UngroupedNodesUnaffected(t *testing.T) {
 	nodes := []agent.Node{
 		{ID: "x", Name: "solo-agent", Status: agent.StatusRunning},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	view := next.(Model).View()
 
@@ -101,7 +101,7 @@ func TestVisibleNodes_GroupHeaderInVisibleNodes(t *testing.T) {
 		{ID: "a", Name: "agent-a", GroupID: "g1", Status: agent.StatusRunning},
 		{ID: "b", Name: "agent-b", GroupID: "g1", Status: agent.StatusRunning},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	vn := m.visibleNodes()
 	if len(vn) != 3 {
 		t.Fatalf("expected 3 visible nodes (1 header + 2 members), got %d: %+v", len(vn), vn)
@@ -120,7 +120,7 @@ func TestVisibleNodes_CollapsedGroup_HidesMembers(t *testing.T) {
 		{ID: "b", Name: "agent-b", GroupID: "g1", Status: agent.StatusRunning},
 		{ID: "c", Name: "solo", Status: agent.StatusRunning},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	m.collapsedGroups["g1"] = true
 	vn := m.visibleNodes()
 	if len(vn) != 2 {
@@ -139,7 +139,7 @@ func TestUpdate_Space_CollapsesGroup(t *testing.T) {
 		{ID: "a", Name: "agent-a", GroupID: "g1", Status: agent.StatusRunning},
 		{ID: "b", Name: "agent-b", GroupID: "g1", Status: agent.StatusRunning},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" ")})
 	got := next.(Model)
 	if !got.collapsedGroups["g1"] {
@@ -164,7 +164,7 @@ func TestView_CollapsedGroup_HidesMembersFromView(t *testing.T) {
 		{ID: "a", Name: "agent-a", GroupID: "g1", Status: agent.StatusRunning},
 		{ID: "b", Name: "agent-b", GroupID: "g1", Status: agent.StatusRunning},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" ")})
 	view := next.(Model).View()
@@ -188,7 +188,7 @@ func TestFooter_SpaceHint_ShownForGroupHeader(t *testing.T) {
 		{ID: "a", Name: "agent-a", GroupID: "g1", Status: agent.StatusRunning},
 		{ID: "b", Name: "agent-b", GroupID: "g1", Status: agent.StatusRunning},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	view := next.(Model).View()
 	if !strings.Contains(view, "expand/collapse") {
@@ -202,7 +202,7 @@ func TestFooter_MarkWinnerHint_OnlyWhenCursorInGroup(t *testing.T) {
 		{ID: "b", Name: "agent-b", GroupID: "g1", Status: agent.StatusRunning},
 		{ID: "c", Name: "solo", Status: agent.StatusRunning},
 	}
-	m := New(grouped, nil)
+	m := New(grouped, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 
 	// cursor=0 is the group header — no "mark winner" hint.

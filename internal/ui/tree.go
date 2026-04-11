@@ -102,13 +102,14 @@ func (m Model) lastEventTime(id string) time.Time {
 }
 
 // nodeMatchesFilter reports whether n should be shown under the current filter.
+// For filterHidden the caller handles visibility directly via hiddenSessions.
 func (m Model) nodeMatchesFilter(n *agent.Node) bool {
 	switch m.statusFilter {
 	case filterRunning:
 		return n.Status == agent.StatusRunning
 	case filterErrored:
 		return n.Status == agent.StatusError
-	default: // filterAll
+	default: // filterAll, filterHidden handled by visibleNodes
 		return true
 	}
 }
@@ -118,14 +119,33 @@ func (m Model) nodeMatchesFilter(n *agent.Node) bool {
 // their members entirely. Nodes excluded by the status filter are hidden along
 // with their subtrees. Parallel groups are represented by a virtual header
 // row (groupID non-empty, id empty) that the cursor can land on.
+//
+// When statusFilter is filterHidden, only top-level sessions in hiddenSessions
+// are shown (no children, no filter by status).
+// In all other filters, hidden sessions and their children are suppressed.
 func (m Model) visibleNodes() []visibleNode {
 	var result []visibleNode
 	seenGroups := map[string]bool{}
+
+	if m.statusFilter == filterHidden {
+		// Hidden view: show only the sessions the user has hidden.
+		for _, id := range m.sortedRoots() {
+			if m.hiddenSessions[id] {
+				result = append(result, visibleNode{id: id, depth: 0})
+			}
+		}
+		return result
+	}
 
 	var walk func(id string, depth int)
 	walk = func(id string, depth int) {
 		node := m.agents.Nodes[id]
 		if node == nil {
+			return
+		}
+
+		// Never show hidden sessions (or their children) in any non-hidden filter.
+		if depth == 0 && m.hiddenSessions[id] {
 			return
 		}
 

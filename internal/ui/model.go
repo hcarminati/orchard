@@ -18,6 +18,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/hcarminati/orchard/internal/agent"
+	"github.com/hcarminati/orchard/internal/hidden"
 )
 
 // panel identifies which panel currently has keyboard focus.
@@ -59,6 +60,7 @@ const (
 	filterAll     filterMode = iota // show every node
 	filterRunning                   // show only nodes with StatusRunning
 	filterErrored                   // show only nodes with StatusError
+	filterHidden                    // show only hidden sessions (for restore)
 )
 
 // label returns the display name for the current filter mode.
@@ -68,6 +70,8 @@ func (f filterMode) label() string {
 		return "running"
 	case filterErrored:
 		return "errored"
+	case filterHidden:
+		return "hidden"
 	default:
 		return "all"
 	}
@@ -83,6 +87,10 @@ const idleDuration = 3 * time.Second
 // doneDuration is how long a session can stay Idle with no new activity before
 // it is assumed closed and transitions to Done (grey).
 const doneDuration = 10 * time.Minute
+
+// hideSavedMsg is returned by the save-hidden command when the write completes.
+// The error is nil on success.
+type hideSavedMsg struct{ err error }
 
 // hookEventMsg wraps an incoming hook event as a Bubbletea message.
 // Keeping it unexported prevents callers from constructing it directly;
@@ -105,30 +113,43 @@ type doneTimeoutMsg struct {
 	gen       int
 }
 
+// lineHeightKey is the cache key for linesForEvent results.
+// It encodes all inputs that affect the computed height so cache hits are exact.
+type lineHeightKey struct {
+	nodeID   string
+	idx      int
+	expanded bool
+	width    int
+}
+
 // Model holds all the state for the Orchard TUI.
 // In Bubbletea, the model is a value type (not a pointer), meaning it gets
 // copied on every update. This keeps state changes predictable and testable.
 type Model struct {
-	width           int                // current terminal width in columns
-	height          int                // current terminal height in rows
-	activePanel     panel              // which panel currently has keyboard focus
-	agents          agent.Tree         // live agent hierarchy
-	hasSession      bool               // whether any session data has been received
-	eventCh         <-chan agent.Event // nil when no hook server is running
-	timerGen        map[string]int     // per-session idle timer generation; incremented to cancel stale timers
-	cursor          int                // index into visibleNodes() for the focused node
-	scrollOffset    int                // index of the first visible row in the agents panel
-	eventScroll     int                // index of the first visible row in the events panel
-	eventCursor     int                // index into the focused node's Events slice (selected row)
-	expandedEvents  map[string]bool    // set of "nodeID:eventIdx" keys for expanded tool events
-	modalOpen       bool               // whether the detail modal is visible
-	modalScroll     int                // vertical scroll offset within modal content
-	lastClickTime   time.Time          // timestamp of the last left-click in the events panel
-	lastClickIdx    int                // event index of the last left-click in the events panel
-	collapsed       map[string]bool    // set of node IDs whose subtrees are currently hidden
-	collapsedGroups map[string]bool    // set of GroupIDs whose members are currently hidden
-	statusFilter    filterMode         // which nodes to show in the agent tree
-	activeRightTab  int                // index into rightTabs for the currently shown right-panel tab
+	width           int                    // current terminal width in columns
+	height          int                    // current terminal height in rows
+	activePanel     panel                  // which panel currently has keyboard focus
+	agents          agent.Tree             // live agent hierarchy
+	hasSession      bool                   // whether any session data has been received
+	eventCh         <-chan agent.Event     // nil when no hook server is running
+	timerGen        map[string]int         // per-session idle timer generation; incremented to cancel stale timers
+	cursor          int                    // index into visibleNodes() for the focused node
+	scrollOffset    int                    // index of the first visible row in the agents panel
+	eventScroll     int                    // index of the first visible row in the events panel
+	eventCursor     int                    // index into the focused node's Events slice (selected row)
+	expandedEvents  map[string]bool        // set of "nodeID:eventIdx" keys for expanded tool events
+	lineHeightCache map[lineHeightKey]int  // cached linesForEvent results; invalidated on width change or expand toggle
+	modalOpen       bool                   // whether the detail modal is visible
+	modalScroll     int                    // vertical scroll offset within modal content
+	lastClickTime   time.Time              // timestamp of the last left-click in the events panel
+	lastClickIdx    int                    // event index of the last left-click in the events panel
+	collapsed       map[string]bool        // set of node IDs whose subtrees are currently hidden
+	collapsedGroups map[string]bool        // set of GroupIDs whose members are currently hidden
+	statusFilter    filterMode             // which nodes to show in the agent tree
+	activeRightTab  int                    // index into rightTabs for the currently shown right-panel tab
+	hiddenSessions  map[string]bool        // session IDs hidden from the agent list; persisted to hidden.json
+	confirmHide     string                 // non-empty: session ID awaiting hide confirmation
+	hideStatusMsg   string                 // transient one-line status (e.g. "Cannot hide active session")
 }
 
 // New creates a Model initialized with session data and a hook event channel.
@@ -136,10 +157,14 @@ type Model struct {
 // nodes is the initial set of agents loaded from JSONL on startup (may be nil).
 // eventCh delivers incoming hook events from the embedded HTTP server; pass nil
 // to run without live updates (useful in tests).
-func New(nodes []agent.Node, eventCh <-chan agent.Event) Model {
+// hiddenIDs is the set of session IDs loaded from hidden.json; pass nil for none.
+func New(nodes []agent.Node, eventCh <-chan agent.Event, hiddenIDs map[string]bool) Model {
 	tree := agent.NewTree()
 	for _, n := range nodes {
 		tree.AddNode(n)
+	}
+	if hiddenIDs == nil {
+		hiddenIDs = make(map[string]bool)
 	}
 	return Model{
 		activePanel:     panelAgents,
@@ -148,10 +173,24 @@ func New(nodes []agent.Node, eventCh <-chan agent.Event) Model {
 		eventCh:         eventCh,
 		timerGen:        make(map[string]int),
 		expandedEvents:  make(map[string]bool),
+		lineHeightCache: make(map[lineHeightKey]int),
 		collapsed:       make(map[string]bool),
 		collapsedGroups: make(map[string]bool),
 		statusFilter:    filterAll,
 		eventScroll:     math.MaxInt, // will be clamped to real max on first render
+		hiddenSessions:  hiddenIDs,
+	}
+}
+
+// saveHidden returns a Cmd that persists the current hiddenSessions map to disk.
+func saveHidden(h map[string]bool) tea.Cmd {
+	// Copy the map so the goroutine has a stable snapshot.
+	snap := make(map[string]bool, len(h))
+	for k, v := range h {
+		snap[k] = v
+	}
+	return func() tea.Msg {
+		return hideSavedMsg{err: hidden.Save(snap)}
 	}
 }
 
@@ -293,24 +332,37 @@ func (m *Model) linesForEvent(node *agent.Node, idx int) int {
 		return 0
 	}
 	e := node.Events[idx]
-	key := eventKey(node.ID, idx)
-	if !isToolEvent(e) || !m.expandedEvents[key] {
-		return 1
+	eKey := eventKey(node.ID, idx)
+	expanded := isToolEvent(e) && m.expandedEvents[eKey]
+
+	cacheKey := lineHeightKey{nodeID: node.ID, idx: idx, expanded: expanded, width: m.innerWidth()}
+	if h, ok := m.lineHeightCache[cacheKey]; ok {
+		return h
 	}
-	innerW := m.innerWidth()
-	const indent = 5 // "│    " prefix
-	if e.Type == "Notification" {
-		if e.Message == "" {
-			return 2 // header + trailing │
+
+	var h int
+	if !expanded {
+		h = 1
+	} else {
+		innerW := m.innerWidth()
+		const indent = 5 // "│    " prefix
+		if e.Type == "Notification" {
+			if e.Message == "" {
+				h = 2 // header + trailing │
+			} else {
+				h = 3 + wrappedLineCount(e.Message, innerW-indent)
+			}
+		} else {
+			h = 3 // header + "│  Input:" + trailing "│"
+			h += wrappedLineCount(e.Input, innerW-indent)
+			if e.Response != "" {
+				h += 1 + wrappedLineCount(e.Response, innerW-indent)
+			}
 		}
-		return 3 + wrappedLineCount(e.Message, innerW-indent)
 	}
-	count := 3 // header + "│  Input:" + trailing "│"
-	count += wrappedLineCount(e.Input, innerW-indent)
-	if e.Response != "" {
-		count += 1 + wrappedLineCount(e.Response, innerW-indent)
-	}
-	return count
+
+	m.lineHeightCache[cacheKey] = h
+	return h
 }
 
 // clampEventScroll adjusts eventScroll so it stays within the bounds of the
@@ -448,6 +500,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.lineHeightCache = make(map[lineHeightKey]int) // panel width changed; all cached heights are stale
 		m.clampScroll()
 		m.scrollEventToBottom()
 
@@ -482,6 +535,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.modalScroll = 0
 				}
 			}
+			return m, nil
+		}
+		// Clear any transient status message on the next keypress.
+		m.hideStatusMsg = ""
+		// Confirmation prompt: intercept all keys while awaiting hide confirmation.
+		if m.confirmHide != "" {
+			if msg.String() == "y" {
+				m.hiddenSessions[m.confirmHide] = true
+				m.confirmHide = ""
+				// Clamp cursor in case the hidden node was the last one.
+				if newLen := len(m.visibleNodes()); m.cursor >= newLen {
+					m.cursor = max(0, newLen-1)
+				}
+				m.clampScroll()
+				return m, saveHidden(m.hiddenSessions)
+			}
+			m.confirmHide = ""
 			return m, nil
 		}
 		switch msg.String() {
@@ -531,6 +601,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if node != nil && m.eventCursor < len(node.Events) && isToolEvent(node.Events[m.eventCursor]) {
 					key := eventKey(node.ID, m.eventCursor)
 					m.expandedEvents[key] = !m.expandedEvents[key]
+					w := m.innerWidth()
+					delete(m.lineHeightCache, lineHeightKey{nodeID: node.ID, idx: m.eventCursor, expanded: true, width: w})
+					delete(m.lineHeightCache, lineHeightKey{nodeID: node.ID, idx: m.eventCursor, expanded: false, width: w})
 				}
 			} else {
 				vn := m.visibleNodes()
@@ -554,10 +627,37 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "]":
 			m.activeRightTab = (m.activeRightTab + 1) % len(rightTabs)
 		case "f":
-			// Cycle filter: All → Running → Errored → All.
-			m.statusFilter = (m.statusFilter + 1) % 3
+			// Cycle filter: All → Running → Errored → Hidden → All.
+			m.statusFilter = (m.statusFilter + 1) % 4
 			m.cursor = 0
 			m.scrollOffset = 0
+		case "r":
+			// Restore a hidden session when in the hidden filter view.
+			if m.activePanel == panelAgents && m.statusFilter == filterHidden {
+				vn := m.visibleNodes()
+				if m.cursor < len(vn) {
+					delete(m.hiddenSessions, vn[m.cursor].id)
+					if newLen := len(m.visibleNodes()); m.cursor >= newLen {
+						m.cursor = max(0, newLen-1)
+					}
+					return m, saveHidden(m.hiddenSessions)
+				}
+			}
+		case "d":
+			// Hide a top-level parent session (not children, not running sessions).
+			if m.activePanel == panelAgents && m.statusFilter != filterHidden {
+				vn := m.visibleNodes()
+				if m.cursor < len(vn) {
+					entry := vn[m.cursor]
+					if entry.depth == 0 && entry.groupID == "" && m.agents.Nodes[entry.id] != nil {
+						if m.effectiveStatus(entry.id) == agent.StatusRunning {
+							m.hideStatusMsg = "Cannot hide active session"
+						} else {
+							m.confirmHide = entry.id
+						}
+					}
+				}
+			}
 		case "G":
 			if m.activePanel == panelEvents {
 				m.scrollEventToBottom()
@@ -676,6 +776,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 								if idx == m.eventCursor && isToolEvent(node.Events[idx]) {
 									key := eventKey(node.ID, idx)
 									m.expandedEvents[key] = !m.expandedEvents[key]
+									w := m.innerWidth()
+									delete(m.lineHeightCache, lineHeightKey{nodeID: node.ID, idx: idx, expanded: true, width: w})
+									delete(m.lineHeightCache, lineHeightKey{nodeID: node.ID, idx: idx, expanded: false, width: w})
 								}
 								m.lastClickTime = time.Now()
 								m.lastClickIdx = idx
@@ -732,6 +835,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				node.Status = agent.StatusDone
 			}
 		}
+
+	case hideSavedMsg:
+		// Save completed; nothing to do (errors are silently dropped — the TUI
+		// should not crash because a config write failed).
 	}
 
 	return m, nil

@@ -17,6 +17,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/hcarminati/orchard/internal/agent"
+	"github.com/hcarminati/orchard/internal/hidden"
 	"github.com/hcarminati/orchard/internal/hooks"
 	"github.com/hcarminati/orchard/internal/session"
 	"github.com/hcarminati/orchard/internal/ui"
@@ -79,6 +80,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	// Load hidden session IDs from ~/.config/orchard/hidden.json.
+	// Errors are non-fatal; the TUI starts with no hidden sessions.
+	hiddenIDs, err := hidden.Load()
+	if err != nil {
+		fmt.Fprintf(stderr, "warning: could not load hidden sessions: %v\n", err)
+	}
+
 	// Create a buffered channel for hook events.
 	// The buffer prevents the HTTP handler from stalling if the TUI is briefly busy.
 	eventCh := make(chan agent.Event, 256)
@@ -105,7 +113,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	// Think of the program as the event loop — it handles keyboard input,
 	// window resize events, and calls our model's Update/View functions.
 	p := tea.NewProgram(
-		ui.New(initialNodes, eventCh), // model seeded with session data + live event channel
+		ui.New(initialNodes, eventCh, hiddenIDs), // model seeded with session data + live event channel
 		tea.WithAltScreen(),           // use the terminal's alternate screen buffer so we
 		// don't mess up the user's scrollback history
 		tea.WithMouseCellMotion(), // enable mouse click support for node focus

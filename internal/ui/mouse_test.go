@@ -28,7 +28,7 @@ func TestUpdate_MouseClick_MovesCursorToClickedRow(t *testing.T) {
 		{ID: "b", Name: "agent-b", Status: agent.StatusRunning},
 		{ID: "c", Name: "agent-c", Status: agent.StatusRunning},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = next.(Model)
 
@@ -43,7 +43,7 @@ func TestUpdate_MouseClick_AlreadySelectedLeaf_IsNoop(t *testing.T) {
 		{ID: "a", Name: "agent-a", Status: agent.StatusRunning},
 		{ID: "b", Name: "agent-b", Status: agent.StatusRunning},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = next.(Model)
 
@@ -62,7 +62,7 @@ func TestUpdate_MouseClick_AlreadySelectedLeaf_IsNoop(t *testing.T) {
 func TestUpdate_MouseClick_TogglesCollapseOnNodeWithChildren(t *testing.T) {
 	parent := agent.Node{ID: "p", Name: "parent", Status: agent.StatusRunning}
 	child := agent.Node{ID: "c", Name: "child", ParentID: "p", Status: agent.StatusRunning}
-	m := New([]agent.Node{parent, child}, nil)
+	m := New([]agent.Node{parent, child}, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = next.(Model)
 
@@ -88,7 +88,7 @@ func TestUpdate_MouseClick_TogglesCollapseOnGroupHeader(t *testing.T) {
 		{ID: "a", Name: "agent-a", GroupID: "g1", Status: agent.StatusRunning},
 		{ID: "b", Name: "agent-b", GroupID: "g1", Status: agent.StatusRunning},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = next.(Model)
 
@@ -114,7 +114,7 @@ func TestUpdate_MouseClick_OutsideAgentsPanel_NoEffect(t *testing.T) {
 		{ID: "a", Name: "agent-a", Status: agent.StatusRunning},
 		{ID: "b", Name: "agent-b", Status: agent.StatusRunning},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = next.(Model)
 
@@ -131,7 +131,7 @@ func TestUpdate_MouseClick_DoesNotBreakKeyboardNavigation(t *testing.T) {
 		{ID: "b", Name: "agent-b", Status: agent.StatusRunning},
 		{ID: "c", Name: "agent-c", Status: agent.StatusRunning},
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = next.(Model)
 
@@ -150,7 +150,7 @@ func TestUpdate_MouseClick_DoesNotBreakKeyboardNavigation(t *testing.T) {
 // --- Scroll wheel ---
 
 func TestMouseWheel_ScrollsEventPanel(t *testing.T) {
-	m := New([]agent.Node{makeNodeWithEvents("s1xxxxxxxx", 50)}, nil)
+	m := New([]agent.Node{makeNodeWithEvents("s1xxxxxxxx", 50)}, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = next.(Model)
 
@@ -177,7 +177,7 @@ func TestMouseWheel_ScrollsAgentsPanel(t *testing.T) {
 		id := fmt.Sprintf("s%02dxxxxxx", i)
 		nodes = append(nodes, agent.Node{ID: id, Name: "session:" + id[:8], Status: agent.StatusRunning})
 	}
-	m := New(nodes, nil)
+	m := New(nodes, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = next.(Model)
 

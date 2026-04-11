@@ -10,7 +10,7 @@ import (
 // buildModel constructs a Model from the given nodes, suitable for exercising
 // sortedRoots, effectiveStatus, and lastEventTime without a window size.
 func buildModel(nodes []agent.Node) Model {
-	return New(nodes, nil)
+	return New(nodes, nil, nil)
 }
 
 // event returns a synthetic agent.Event at the given time.
