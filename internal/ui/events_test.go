@@ -453,7 +453,6 @@ func TestEventsContent_NonToolEventNotExpandable(t *testing.T) {
 			Status: agent.StatusRunning,
 			Events: []agent.Event{
 				{Type: "Stop", SessionID: "s1xxxxxxxx", Timestamp: time.Now()},
-				{Type: "Notification", Message: "hello", SessionID: "s1xxxxxxxx", Timestamp: time.Now()},
 				{Type: "SubagentStop", SessionID: "s1xxxxxxxx", Timestamp: time.Now()},
 			},
 		},
@@ -466,7 +465,7 @@ func TestEventsContent_NonToolEventNotExpandable(t *testing.T) {
 	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
 	m = next.(Model)
 
-	for range 3 {
+	for range 2 {
 		next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 		m = next.(Model)
 		content := m.eventsContent()
@@ -550,6 +549,104 @@ func TestEventsContent_NotificationEmptyMessage_ShowsArrow(t *testing.T) {
 	}
 	if !strings.Contains(content, "►") {
 		t.Errorf("expected '►' separator even with empty message, got: %q", content)
+	}
+}
+
+func TestEventsContent_Notification_Expandable(t *testing.T) {
+	nodes := []agent.Node{
+		{
+			ID:     "s1xxxxxxxx",
+			Name:   "session:s1xxxxxx",
+			Status: agent.StatusRunning,
+			Events: []agent.Event{
+				{Type: "Notification", Message: "something happened", SessionID: "s1xxxxxxxx", Timestamp: time.Now()},
+			},
+		},
+	}
+	m := New(nodes, nil)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = next.(Model)
+
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = next.(Model)
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(Model)
+
+	content := m.eventsContent()
+	if !strings.Contains(content, "Message:") {
+		t.Errorf("expected 'Message:' label in expanded Notification, got: %q", content)
+	}
+	if !strings.Contains(content, "something happened") {
+		t.Errorf("expected full message text in expanded Notification, got: %q", content)
+	}
+}
+
+func TestEventsContent_Notification_ExpandedShowsDownArrow(t *testing.T) {
+	nodes := []agent.Node{
+		{
+			ID:     "s1xxxxxxxx",
+			Name:   "session:s1xxxxxx",
+			Status: agent.StatusRunning,
+			Events: []agent.Event{
+				{Type: "Notification", Message: "hello", SessionID: "s1xxxxxxxx", Timestamp: time.Now()},
+			},
+		},
+	}
+	m := New(nodes, nil)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = next.(Model)
+
+	// Collapsed — should show ► not ▼.
+	content := m.eventsContent()
+	if !strings.Contains(content, "►") {
+		t.Errorf("expected '►' when collapsed, got: %q", content)
+	}
+
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = next.(Model)
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(Model)
+
+	// Expanded — ► replaced by ▼, message no longer inline.
+	content = m.eventsContent()
+	if !strings.Contains(content, "▼") {
+		t.Errorf("expected '▼' when expanded, got: %q", content)
+	}
+	if strings.Contains(content, "►") {
+		t.Errorf("expected '►' to be absent when expanded, got: %q", content)
+	}
+}
+
+func TestEventsContent_Notification_EnterTogglesExpand(t *testing.T) {
+	nodes := []agent.Node{
+		{
+			ID:     "s1xxxxxxxx",
+			Name:   "session:s1xxxxxx",
+			Status: agent.StatusRunning,
+			Events: []agent.Event{
+				{Type: "Notification", Message: "ping", SessionID: "s1xxxxxxxx", Timestamp: time.Now()},
+			},
+		},
+	}
+	m := New(nodes, nil)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = next.(Model)
+
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = next.(Model)
+
+	// First enter: expand.
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(Model)
+	if !strings.Contains(m.eventsContent(), "Message:") {
+		t.Error("expected expanded after first enter")
+	}
+
+	// Second enter: collapse.
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(Model)
+	if strings.Contains(m.eventsContent(), "Message:") {
+		t.Error("expected collapsed after second enter")
 	}
 }
 

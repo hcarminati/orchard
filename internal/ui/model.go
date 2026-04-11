@@ -226,7 +226,8 @@ func eventKey(nodeID string, idx int) string {
 
 // isToolEvent reports whether an event can be expanded to show input/output.
 func isToolEvent(e agent.Event) bool {
-	return e.Type == "PreToolUse" || e.Type == "PostToolUse" || e.Type == "PermissionRequest"
+	return e.Type == "PreToolUse" || e.Type == "PostToolUse" ||
+		e.Type == "PermissionRequest" || e.Type == "Notification"
 }
 
 // innerWidth returns the usable content width inside the right panel.
@@ -267,7 +268,14 @@ func (m *Model) linesForEvent(node *agent.Node, idx int) int {
 	}
 	innerW := m.innerWidth()
 	const indent = 5 // "│    " prefix
-	count := 3       // header line + "│  Input:" label + trailing "│"
+	if e.Type == "Notification" {
+		// Expanded Notification: header + "│  Message:" label + message lines + trailing "│".
+		if e.Message == "" {
+			return 2 // header + trailing │
+		}
+		return 3 + wrappedLineCount(e.Message, innerW-indent)
+	}
+	count := 3 // header line + "│  Input:" label + trailing "│"
 	count += wrappedLineCount(e.Input, innerW-indent)
 	if e.Response != "" {
 		count += 1 + wrappedLineCount(e.Response, innerW-indent)

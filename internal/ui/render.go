@@ -380,10 +380,14 @@ func (m Model) eventsContent() string {
 
 		switch e.Type {
 		case "Notification":
-			header += "  " + mutedStyle.Render("►")
-			if e.Message != "" {
-				msg := truncRunes(strings.ReplaceAll(e.Message, "\n", " "), 40)
-				header += "  " + mutedStyle.Render(msg)
+			if expanded {
+				header += "  " + mutedStyle.Render("▼")
+			} else {
+				header += "  " + mutedStyle.Render("►")
+				if e.Message != "" {
+					msg := truncRunes(strings.ReplaceAll(e.Message, "\n", " "), 40)
+					header += "  " + mutedStyle.Render(msg)
+				}
 			}
 		case "PermissionRequest":
 			header += "  " + warningStyle.Render("⚠")
@@ -438,9 +442,19 @@ func (m Model) eventsContent() string {
 				allLines = append(allLines, header)
 			}
 		} else {
-			// Expanded: header, then bordered KV block for input, then output.
+			// Expanded: header, then bordered block for content.
 			allLines = append(allLines, header)
 			bar := borderStyle.Render("│")
+			if e.Type == "Notification" && e.Message != "" {
+				allLines = append(allLines, bar+"  "+mutedStyle.Render("Message:"))
+				for _, l := range strings.Split(e.Message, "\n") {
+					line := bar + "    " + l
+					if lipgloss.Width(line) > innerW {
+						line = lipgloss.NewStyle().MaxWidth(innerW-1).Render(line) + "…"
+					}
+					allLines = append(allLines, line)
+				}
+			}
 			if e.Input != "" {
 				allLines = append(allLines, bar+"  "+mutedStyle.Render("Input:"))
 				for _, l := range formatKV(e.Input, home) {
