@@ -226,3 +226,24 @@ func TestServer_GracefulShutdown(t *testing.T) {
 		t.Errorf("Shutdown returned error: %v", err)
 	}
 }
+
+func TestHandle_ParentSessionID_PropagatedToEvent(t *testing.T) {
+	srv, ch := newTestServer(t)
+	defer srv.Close()
+
+	postJSON(t, srv, payload{
+		SessionID:       "child-session",
+		ParentSessionID: "parent-session",
+		HookEventName:   "PreToolUse",
+		CWD:             testCWD,
+		ToolName:        "Bash",
+	}).Body.Close()
+
+	e := receiveEvent(t, ch)
+	if e.ParentID != "parent-session" {
+		t.Errorf("expected ParentID='parent-session', got %q", e.ParentID)
+	}
+	if e.SessionID != "child-session" {
+		t.Errorf("expected SessionID='child-session', got %q", e.SessionID)
+	}
+}

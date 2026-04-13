@@ -25,20 +25,40 @@ type rawMessage struct {
 	ContentRaw json.RawMessage `json:"content"`
 }
 
+// subagentMeta is the content of agent-{agentId}.meta.json files written by
+// Claude Code alongside each subagent session.
+type subagentMeta struct {
+	AgentType   string `json:"agentType"`
+	Description string `json:"description"`
+}
+
+// subagentRecord captures the fields we need from each line of a subagent JSONL.
+// The structure is the same as a parent session record except the subagent's own
+// ID is in agentId (not sessionId — that field holds the parent's session ID).
+type subagentRecord struct {
+	Type      string     `json:"type"`
+	AgentID   string     `json:"agentId"`
+	SessionID string     `json:"sessionId"` // parent session ID
+	Timestamp string     `json:"timestamp"`
+	Message   rawMessage `json:"message"`
+}
+
 // contentBlock represents a single block in a message content array.
 // We only care about tool_use blocks (to reconstruct PreToolUse events).
 type contentBlock struct {
-	Type string `json:"type"`
-	Name string `json:"name"` // populated for tool_use blocks
+	Type  string          `json:"type"`
+	Name  string          `json:"name"`  // populated for tool_use blocks
+	Input json.RawMessage `json:"input"` // raw JSON tool parameters for tool_use blocks
 }
 
 // record captures the fields we need from each JSONL line.
 type record struct {
-	Type      string     `json:"type"`
-	SessionID string     `json:"sessionId"`
-	CWD       string     `json:"cwd"`
-	Timestamp string     `json:"timestamp"`
-	Message   rawMessage `json:"message"`
+	Type       string     `json:"type"`
+	SessionID  string     `json:"sessionId"`
+	ParentUUID string     `json:"parentUuid"` // set for subagent sessions
+	CWD        string     `json:"cwd"`
+	Timestamp  string     `json:"timestamp"`
+	Message    rawMessage `json:"message"`
 }
 
 // Load reads the Claude Code project directory that corresponds to cwd and
@@ -90,9 +110,71 @@ func loadFrom(base, cwd string) ([]agent.Node, error) {
 			seen[n.ID] = true
 			nodes = append(nodes, n)
 		}
+
+		// Check for a subagents/ directory alongside this session file.
+		// Claude Code stores each subagent as {sessionId}/subagents/agent-{agentId}.jsonl
+		// with a companion agent-{agentId}.meta.json holding agentType and description.
+		sessionID := strings.TrimSuffix(entry.Name(), ".jsonl")
+		subNodes, _ := loadSubagentNodes(filepath.Join(dir, sessionID, "subagents"), sessionID)
+		for _, n := range subNodes {
+			if seen[n.ID] {
+				continue
+			}
+			seen[n.ID] = true
+			nodes = append(nodes, n)
+		}
 	}
 
-	return nodes, nil
+	// Sort so parents are always before their children. tree.AddNode requires the
+	// parent to already exist in the tree when the child is added.
+	return topoSort(nodes), nil
+}
+
+// topoSort returns nodes ordered so every parent appears before its children.
+// Nodes whose ParentID is not in the set (or is empty) are treated as roots.
+func topoSort(nodes []agent.Node) []agent.Node {
+	inSet := make(map[string]bool, len(nodes))
+	for _, n := range nodes {
+		inSet[n.ID] = true
+	}
+
+	result := make([]agent.Node, 0, len(nodes))
+	added := make(map[string]bool, len(nodes))
+
+	// Roots first: nodes with no parent, or whose parent is outside this set.
+	for _, n := range nodes {
+		if n.ParentID == "" || !inSet[n.ParentID] {
+			result = append(result, n)
+			added[n.ID] = true
+		}
+	}
+
+	// Repeatedly emit nodes whose parent is already emitted.
+	for len(result) < len(nodes) {
+		progress := false
+		for _, n := range nodes {
+			if added[n.ID] {
+				continue
+			}
+			if added[n.ParentID] {
+				result = append(result, n)
+				added[n.ID] = true
+				progress = true
+			}
+		}
+		if !progress {
+			break // remaining nodes form cycles or reference missing parents
+		}
+	}
+
+	// Append any stragglers (should not happen in practice).
+	for _, n := range nodes {
+		if !added[n.ID] {
+			result = append(result, n)
+		}
+	}
+
+	return result
 }
 
 // cwdToDir converts a filesystem path to the directory name Claude Code uses
@@ -143,6 +225,11 @@ func parseNodes(path string) ([]agent.Node, error) {
 			order = append(order, rec.SessionID)
 		}
 
+		// Capture the parent relationship from any record that carries it.
+		if rec.ParentUUID != "" && nodeMap[rec.SessionID].ParentID == "" {
+			nodeMap[rec.SessionID].ParentID = rec.ParentUUID
+		}
+
 		// Only assistant messages carry tool_use blocks.
 		if rec.Message.Role != "assistant" {
 			continue
@@ -163,6 +250,7 @@ func parseNodes(path string) ([]agent.Node, error) {
 					Type:      "PreToolUse",
 					SessionID: rec.SessionID,
 					Tool:      block.Name,
+					Input:     string(block.Input),
 					Timestamp: ts,
 				})
 			}
@@ -188,4 +276,132 @@ func parseTimestamp(s string) time.Time {
 		return time.Time{}
 	}
 	return t.Local()
+}
+
+// loadSubagentNodes reads a {sessionId}/subagents/ directory and returns one
+// agent.Node per subagent meta file found. Each node uses the agentId as its ID,
+// the parent sessionId as its ParentID, and the agentType from meta.json as its
+// display name. Tool-use events are extracted from the companion JSONL file.
+// Missing or unreadable entries are silently skipped.
+func loadSubagentNodes(subagentsDir, parentID string) ([]agent.Node, error) {
+	entries, err := os.ReadDir(subagentsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	var nodes []agent.Node
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".meta.json") {
+			continue
+		}
+
+		// Read meta.json to get agentType ("Explore", "Plan", etc.).
+		metaData, err := os.ReadFile(filepath.Join(subagentsDir, name))
+		if err != nil {
+			continue
+		}
+		var meta subagentMeta
+		if err := json.Unmarshal(metaData, &meta); err != nil || meta.AgentType == "" {
+			continue
+		}
+
+		// Extract the agentId by stripping "agent-" prefix and ".meta.json" suffix.
+		agentID := strings.TrimSuffix(strings.TrimPrefix(name, "agent-"), ".meta.json")
+
+		// Parse the companion JSONL for tool-use events and spawn timestamp.
+		jsonlPath := filepath.Join(subagentsDir, "agent-"+agentID+".jsonl")
+		events := parseSubagentEvents(jsonlPath, agentID)
+		spawnedAt := firstJSONLTimestamp(jsonlPath)
+
+		displayName := meta.Description
+		if displayName == "" {
+			displayName = meta.AgentType
+		}
+		if len([]rune(displayName)) > 25 {
+			displayName = string([]rune(displayName)[:25]) + "…"
+		}
+
+		nodes = append(nodes, agent.Node{
+			ID:        agentID,
+			ParentID:  parentID,
+			Name:      displayName,
+			Prompt:    meta.Description,
+			SpawnedAt: spawnedAt,
+			Status:    agent.StatusDone,
+			Children:  []string{},
+			Tools:     []string{},
+			Skills:    []string{},
+			Events:    events,
+		})
+	}
+	return nodes, nil
+}
+
+// firstJSONLTimestamp returns the timestamp from the first line of a JSONL file.
+// Returns the zero time if the file cannot be read or has no timestamp field.
+func firstJSONLTimestamp(path string) time.Time {
+	f, err := os.Open(path)
+	if err != nil {
+		return time.Time{}
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	if scanner.Scan() {
+		var rec struct {
+			Timestamp string `json:"timestamp"`
+		}
+		if err := json.Unmarshal(scanner.Bytes(), &rec); err == nil {
+			return parseTimestamp(rec.Timestamp)
+		}
+	}
+	return time.Time{}
+}
+
+// parseSubagentEvents reads a subagent JSONL file and extracts PreToolUse events
+// from tool_use blocks in assistant messages, the same way parseNodes does for
+// parent sessions. agentID is used as the SessionID on each returned event so
+// they are associated with the subagent's own node.
+func parseSubagentEvents(path, agentID string) []agent.Event {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+
+	var events []agent.Event
+	for scanner.Scan() {
+		var rec subagentRecord
+		if err := json.Unmarshal(scanner.Bytes(), &rec); err != nil {
+			continue
+		}
+		if rec.Message.Role != "assistant" {
+			continue
+		}
+		var blocks []contentBlock
+		if err := json.Unmarshal(rec.Message.ContentRaw, &blocks); err != nil {
+			continue
+		}
+		ts := parseTimestamp(rec.Timestamp)
+		for _, block := range blocks {
+			if block.Type == "tool_use" && block.Name != "" {
+				events = append(events, agent.Event{
+					Type:      "PreToolUse",
+					SessionID: agentID,
+					Tool:      block.Name,
+					Input:     string(block.Input),
+					Timestamp: ts,
+				})
+			}
+		}
+	}
+	return events
 }

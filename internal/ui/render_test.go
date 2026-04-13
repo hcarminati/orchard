@@ -58,7 +58,7 @@ func TestView_ErroredNodeAtTop(t *testing.T) {
 		{ID: "a", Name: "agent-ok", Status: agent.StatusRunning},
 		{ID: "b", Name: "agent-err", Status: agent.StatusError, ErrorMsg: "something broke"},
 	}
-	m := New(nodes, nil)
+	m := newWithClock(nodes, nil, nil, time.Time{})
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	view := next.(Model).View()
 
@@ -79,7 +79,7 @@ func TestView_ErrorMessageInline(t *testing.T) {
 	nodes := []agent.Node{
 		{ID: "a", Name: "agent-err", Status: agent.StatusError, ErrorMsg: "panic"},
 	}
-	m := New(nodes, nil)
+	m := newWithClock(nodes, nil, nil, time.Time{})
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	view := next.(Model).View()
 
@@ -92,7 +92,7 @@ func TestView_NoErrorMessage_WhenErrorMsgEmpty(t *testing.T) {
 	nodes := []agent.Node{
 		{ID: "a", Name: "agent-err", Status: agent.StatusError, ErrorMsg: ""},
 	}
-	m := New(nodes, nil)
+	m := newWithClock(nodes, nil, nil, time.Time{})
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	view := next.(Model).View()
 
@@ -108,7 +108,7 @@ func TestSortedRoots_ErroredFirst(t *testing.T) {
 		{ID: "c", Status: agent.StatusIdle},
 		{ID: "d", Status: agent.StatusError},
 	}
-	m := New(nodes, nil)
+	m := newWithClock(nodes, nil, nil, time.Time{})
 	sr := m.sortedRoots()
 
 	if len(sr) != 4 {
@@ -130,7 +130,7 @@ func TestSortedRoots_ErroredFirst(t *testing.T) {
 
 func TestView_HookError_ErroredNodeAtTop(t *testing.T) {
 	ch := make(chan agent.Event, 10)
-	m := New(nil, ch)
+	m := newWithClock(nil, ch, nil, time.Time{})
 
 	next, _ := m.Update(hookEventMsg{event: agent.Event{Type: "PreToolUse", SessionID: "s1", Timestamp: time.Now()}})
 	next, _ = next.Update(hookEventMsg{event: agent.Event{Type: "PreToolUse", SessionID: "s2", Timestamp: time.Now()}})
@@ -208,6 +208,212 @@ func TestView_CollapsedNode_HidesChildrenFromView(t *testing.T) {
 	}
 	if !strings.Contains(view, "agent-D") {
 		t.Errorf("expected agent-D (sibling root) to still be visible")
+	}
+}
+
+func TestEventsPanel_SpawnContextHeader_ShownForChildNode(t *testing.T) {
+	parent := agent.Node{ID: "parent-abc123", Name: "session:parent-a", Status: agent.StatusDone}
+	child := agent.Node{
+		ID:       "child-xyz",
+		ParentID: "parent-abc123",
+		Name:     "Explore",
+		Prompt:   "find all Go files",
+		Status:   agent.StatusDone,
+	}
+	m := newWithClock([]agent.Node{parent, child}, nil, nil, time.Time{})
+	// Navigate to child node (cursor=1 after parent).
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	view := next.(Model).View()
+
+	if !strings.Contains(view, "Spawned by") {
+		t.Errorf("expected 'Spawned by' header for child node, got:\n%s", view)
+	}
+	if !strings.Contains(view, "session:parent-a") {
+		t.Errorf("expected parent session label in header, got:\n%s", view)
+	}
+	if !strings.Contains(view, "find all Go files") {
+		t.Errorf("expected prompt text in header, got:\n%s", view)
+	}
+}
+
+func TestEventsPanel_SpawnContextHeader_NotShownForParentNode(t *testing.T) {
+	parent := agent.Node{ID: "parent-abc123", Name: "session:parent-a", Status: agent.StatusDone}
+	m := newWithClock([]agent.Node{parent}, nil, nil, time.Time{})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	view := next.(Model).View()
+
+	if strings.Contains(view, "Spawned by") {
+		t.Errorf("expected no 'Spawned by' header for root node, got:\n%s", view)
+	}
+}
+
+func TestEventsPanel_SpawnContextHeader_TruncatesLongPrompt(t *testing.T) {
+	parent := agent.Node{ID: "parent-aabbccdd", Name: "session:parent-a", Status: agent.StatusDone}
+	child := agent.Node{
+		ID:       "child-xyz",
+		ParentID: "parent-aabbccdd",
+		Name:     "Explore",
+		Prompt:   strings.Repeat("a", 100),
+		Status:   agent.StatusDone,
+	}
+	m := newWithClock([]agent.Node{parent, child}, nil, nil, time.Time{})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	view := next.(Model).View()
+
+	if !strings.Contains(view, "…") {
+		t.Errorf("expected long prompt to be truncated with ellipsis, got:\n%s", view)
+	}
+}
+
+func TestView_ChildNode_ShowsConnector(t *testing.T) {
+	m := makeTree()
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	view := next.(Model).View()
+
+	// Child nodes (agent-B, agent-C) should be preceded by the └─ connector.
+	if !strings.Contains(view, "└─") {
+		t.Errorf("expected └─ connector for child nodes in view, got:\n%s", view)
+	}
+}
+
+func TestView_AgentToolCall_ChildNamedAfterSubagentType(t *testing.T) {
+	ch := make(chan agent.Event, 10)
+	m := newWithClock(nil, ch, nil, time.Time{})
+
+	// Parent session appears.
+	next, _ := m.Update(hookEventMsg{event: agent.Event{
+		Type: "PreToolUse", SessionID: "parent-sess", Tool: "Bash",
+		Timestamp: time.Now(),
+	}})
+	// Parent fires an Agent tool call — child node should appear immediately.
+	next, _ = next.Update(hookEventMsg{event: agent.Event{
+		Type:      "PreToolUse",
+		SessionID: "parent-sess",
+		Tool:      "Agent",
+		ToolUseID: "toolu_test_001",
+		Input:     `{"subagent_type":"Explore","prompt":"find files"}`,
+		Timestamp: time.Now(),
+	}})
+	next, _ = next.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+
+	view := next.(Model).View()
+	if !strings.Contains(view, "Explore") {
+		t.Errorf("expected child node to be named 'Explore' in view, got:\n%s", view)
+	}
+	if !strings.Contains(view, "└─") {
+		t.Errorf("expected └─ connector for child node in view, got:\n%s", view)
+	}
+}
+
+// --- toolColor ---
+
+func TestToolColor_KnownTools(t *testing.T) {
+	cases := []struct {
+		tool string
+		want lipgloss.Color
+	}{
+		{"Bash", colorYellow},
+		{"Read", colorBlue},
+		{"WebFetch", colorBlue},
+		{"Edit", colorCoral},
+		{"Write", colorCoral},
+		{"Grep", colorTeal},
+		{"Glob", colorTeal},
+		{"ToolSearch", colorTeal},
+		{"WebSearch", colorTeal},
+		{"Agent", colorAccent},
+		{"TaskCreate", colorAccent},
+		{"TaskUpdate", colorAccent},
+		{"Skill", colorGreen},
+	}
+	for _, tc := range cases {
+		got := toolColor(tc.tool)
+		if got != tc.want {
+			t.Errorf("toolColor(%q) = %q, want %q", tc.tool, got, tc.want)
+		}
+	}
+}
+
+func TestToolColor_MCP_ReturnsBlue(t *testing.T) {
+	cases := []string{"mcp__figma__get_design", "mcp__slack__send_message", "mcp__plugin_figma_figma__whoami"}
+	for _, tool := range cases {
+		got := toolColor(tool)
+		if got != colorBlue {
+			t.Errorf("toolColor(%q) = %q, want colorBlue", tool, got)
+		}
+	}
+}
+
+func TestToolColor_UnknownTool_ReturnsFg(t *testing.T) {
+	got := toolColor("SomeUnrecognizedTool")
+	if got != colorFg {
+		t.Errorf("expected colorFg for unknown tool, got %q", got)
+	}
+}
+
+// --- permissionPreview ---
+
+func TestPermissionPreview_Bash_ExtractsCommand(t *testing.T) {
+	got := permissionPreview("Bash", `{"command":"go test ./...","timeout":30}`, "")
+	if got != "go test ./..." {
+		t.Errorf("expected 'go test ./...', got %q", got)
+	}
+}
+
+func TestPermissionPreview_Bash_TruncatesLongCommand(t *testing.T) {
+	cmd := strings.Repeat("x", 50)
+	got := permissionPreview("Bash", `{"command":"`+cmd+`"}`, "")
+	if len([]rune(got)) > 41 { // 40 + "…"
+		t.Errorf("expected command truncated at 40 runes, got %q (len %d)", got, len([]rune(got)))
+	}
+	if !strings.HasPrefix(got, strings.Repeat("x", 40)) {
+		t.Errorf("expected first 40 x's preserved, got %q", got)
+	}
+}
+
+func TestPermissionPreview_Read_ExtractsFilePathWithTilde(t *testing.T) {
+	got := permissionPreview("Read", `{"file_path":"/home/user/project/main.go"}`, "/home/user")
+	if got != "~/project/main.go" {
+		t.Errorf("expected '~/project/main.go', got %q", got)
+	}
+}
+
+func TestPermissionPreview_Edit_ExtractsFilePathWithTilde(t *testing.T) {
+	got := permissionPreview("Edit", `{"file_path":"/home/user/file.go","old_string":"a","new_string":"b"}`, "/home/user")
+	if got != "~/file.go" {
+		t.Errorf("expected '~/file.go', got %q", got)
+	}
+}
+
+func TestPermissionPreview_Write_ExtractsFilePathWithTilde(t *testing.T) {
+	got := permissionPreview("Write", `{"file_path":"/home/user/out.go","content":"x"}`, "/home/user")
+	if got != "~/out.go" {
+		t.Errorf("expected '~/out.go', got %q", got)
+	}
+}
+
+func TestPermissionPreview_UnknownTool_TruncatesRawInput(t *testing.T) {
+	input := `{"url":"https://example.com"}`
+	got := permissionPreview("WebFetch", input, "")
+	if !strings.HasPrefix(got, `{"url":`) {
+		t.Errorf("expected raw JSON as fallback, got %q", got)
+	}
+}
+
+func TestPermissionPreview_EmptyInput_ReturnsEmpty(t *testing.T) {
+	got := permissionPreview("Bash", "", "")
+	if got != "" {
+		t.Errorf("expected empty string for empty input, got %q", got)
+	}
+}
+
+func TestPermissionPreview_MissingField_FallsBackToRaw(t *testing.T) {
+	// Bash event where the JSON has no "command" field.
+	got := permissionPreview("Bash", `{"description":"do stuff"}`, "")
+	if !strings.Contains(got, "description") {
+		t.Errorf("expected raw input fallback when command field missing, got %q", got)
 	}
 }
 
