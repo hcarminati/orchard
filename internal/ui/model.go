@@ -18,8 +18,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/hcarminati/orchard/internal/agent"
-	"github.com/hcarminati/orchard/internal/hidden"
-	"github.com/hcarminati/orchard/internal/state"
+	"github.com/hcarminati/orchard/internal/config"
 )
 
 // panel identifies which panel currently has keyboard focus.
@@ -265,7 +264,7 @@ func saveHidden(h map[string]bool) tea.Cmd {
 		snap[k] = v
 	}
 	return func() tea.Msg {
-		return hideSavedMsg{err: hidden.Save(snap)}
+		return hideSavedMsg{err: config.SaveHidden(snap)}
 	}
 }
 
@@ -281,7 +280,7 @@ func saveState(collapsed map[string]bool, roots []string) tea.Cmd {
 		}
 	}
 	return func() tea.Msg {
-		return stateSavedMsg{err: state.Save(expanded)}
+		return stateSavedMsg{err: config.SaveExpanded(expanded)}
 	}
 }
 

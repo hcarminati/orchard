@@ -17,10 +17,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/hcarminati/orchard/internal/agent"
-	"github.com/hcarminati/orchard/internal/hidden"
+	"github.com/hcarminati/orchard/internal/config"
 	"github.com/hcarminati/orchard/internal/hooks"
 	"github.com/hcarminati/orchard/internal/session"
-	"github.com/hcarminati/orchard/internal/state"
 	"github.com/hcarminati/orchard/internal/ui"
 )
 
@@ -83,14 +82,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	// Load hidden session IDs from ~/.config/orchard/hidden.json.
 	// Errors are non-fatal; the TUI starts with no hidden sessions.
-	hiddenIDs, err := hidden.Load()
+	hiddenIDs, err := config.LoadHidden()
 	if err != nil {
 		fmt.Fprintf(stderr, "warning: could not load hidden sessions: %v\n", err)
 	}
 
 	// Load expanded session IDs from ~/.config/orchard/state.json.
 	// Errors are non-fatal; all sessions start collapsed by default.
-	expandedIDs, err := state.Load()
+	expandedIDs, err := config.LoadExpanded()
 	if err != nil {
 		fmt.Fprintf(stderr, "warning: could not load session state: %v\n", err)
 	}
