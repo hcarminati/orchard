@@ -10,7 +10,7 @@ import (
 // collapse-by-default logic. expandedIDs mirrors what would be loaded from
 // state.json.
 func newForStartup(nodes []agent.Node, expandedIDs map[string]bool) Model {
-	return New(nodes, nil, nil, expandedIDs)
+	return New(nodes, nil, "", nil, expandedIDs)
 }
 
 func TestNew_CollapsesByDefault(t *testing.T) {

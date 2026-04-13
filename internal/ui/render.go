@@ -450,9 +450,9 @@ func (m Model) eventsContent() string {
 	home, _ := os.UserHomeDir()
 	var allLines []string
 	for idx, e := range node.Events {
-		// Absorbed PermissionRequest events are rendered as part of the
-		// preceding PreToolUse row — skip them entirely here.
-		if isAbsorbedPermission(node.Events, idx) {
+		// Hidden events (absorbed PermissionRequests and internal sentinels)
+		// are not rendered — skip them entirely.
+		if isHiddenEvent(node.Events, idx) {
 			continue
 		}
 		isSelected := idx == m.eventCursor
@@ -822,7 +822,7 @@ func (m Model) modalEventPosition() (current, total int) {
 	pos := 0
 	current = 1
 	for i := range node.Events {
-		if isAbsorbedPermission(node.Events, i) {
+		if isHiddenEvent(node.Events, i) {
 			continue
 		}
 		pos++

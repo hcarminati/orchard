@@ -8,6 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/hcarminati/orchard/internal/agent"
+	"github.com/hcarminati/orchard/internal/watcher"
 )
 
 // newModel returns a Model with no session data and no event channel,
@@ -323,5 +324,128 @@ func TestIdleTimeout_StaleGenIgnored(t *testing.T) {
 	}
 	if node.Status != agent.StatusRunning {
 		t.Errorf("expected StatusRunning (stale timer ignored), got %d", node.Status)
+	}
+}
+
+// --- Subagent live detection ---
+
+func TestUpdate_PreToolUseAgent_WithSubagentsRoot_FiresScanCmd(t *testing.T) {
+	m := newWithClock(nil, nil, nil, time.Time{})
+	m.subagentsRoot = "/some/root"
+
+	_, cmd := m.Update(hookEventMsg{event: agent.Event{
+		Type:      "PreToolUse",
+		SessionID: "parent-session",
+		Tool:      "Agent",
+		Input:     `{"subagent_type":"Explore"}`,
+		Timestamp: time.Now(),
+	}})
+
+	// The returned Cmd must be non-nil (it will include the scan Cmd batch).
+	if cmd == nil {
+		t.Error("expected non-nil Cmd after PreToolUse[Agent] with subagentsRoot set")
+	}
+}
+
+func TestUpdate_PreToolUseAgent_WithoutSubagentsRoot_NoPanic(t *testing.T) {
+	m := newWithClock(nil, nil, nil, time.Time{})
+	// subagentsRoot is "" — no scan should be triggered, but no panic either.
+	next, _ := m.Update(hookEventMsg{event: agent.Event{
+		Type:      "PreToolUse",
+		SessionID: "parent-session",
+		Tool:      "Agent",
+		Timestamp: time.Now(),
+	}})
+	if next == nil {
+		t.Error("expected non-nil model after PreToolUse[Agent] with empty subagentsRoot")
+	}
+}
+
+func TestUpdate_SubagentScanResultMsg_InjectsEvents(t *testing.T) {
+	m := newWithClock(nil, nil, nil, time.Time{})
+
+	// First, create a placeholder node as PreToolUse[Agent] would.
+	m.agents.ApplyEvent(agent.Event{
+		Type:      "PreToolUse",
+		SessionID: "parent",
+		Tool:      "Agent",
+		ToolUseID: "toolu_placeholder",
+		Timestamp: time.Now(),
+	})
+
+	// Now deliver a scan result with two events for the subagent.
+	events := []agent.Event{
+		{Type: "PreToolUse", SessionID: "agent-xyz", ParentID: "parent", Tool: "_subagent_init", Timestamp: time.Now()},
+		{Type: "PreToolUse", SessionID: "agent-xyz", ParentID: "parent", Tool: "Read", Timestamp: time.Now()},
+	}
+	result := watcher.SubagentResult{
+		AgentID: "agent-xyz",
+		Events:  events,
+		Target:  watcher.TailTarget{Path: "/nonexistent", AgentID: "agent-xyz", Offset: 0},
+	}
+	next, _ := m.Update(subagentScanResultMsg{results: []watcher.SubagentResult{result}, parentID: "parent"})
+	got := next.(Model)
+
+	// The placeholder should have been claimed via ApplyEvent and the events applied.
+	// agent-xyz is aliased to toolu_placeholder.
+	placeholder := got.agents.Nodes["toolu_placeholder"]
+	if placeholder == nil {
+		t.Fatal("expected placeholder node toolu_placeholder to exist")
+	}
+	// Events: [_subagent_init] + [Read] = 2 (spawn event stays on parent, not child)
+	if len(placeholder.Events) != 2 {
+		t.Errorf("expected 2 events on placeholder, got %d", len(placeholder.Events))
+	}
+}
+
+func TestUpdate_SubagentScanResultMsg_IdempotentForKnownAgents(t *testing.T) {
+	m := newWithClock(nil, nil, nil, time.Time{})
+	m.watchedSubagents["agent-abc"] = true // pre-mark as watched
+
+	result := watcher.SubagentResult{
+		AgentID: "agent-abc",
+		Events: []agent.Event{
+			{Type: "PreToolUse", SessionID: "agent-abc", ParentID: "parent", Tool: "Read"},
+		},
+		Target: watcher.TailTarget{AgentID: "agent-abc"},
+	}
+	next, cmd := m.Update(subagentScanResultMsg{results: []watcher.SubagentResult{result}, parentID: "parent"})
+	got := next.(Model)
+
+	// No events should be injected (already watched), and no tail Cmd should fire.
+	if _, ok := got.agents.Nodes["agent-abc"]; ok {
+		t.Error("expected no new node for already-watched agent")
+	}
+	if cmd != nil {
+		t.Error("expected nil Cmd when all scan results are already watched")
+	}
+}
+
+func TestUpdate_SubagentTailMsg_AppliesEventAndRelistens(t *testing.T) {
+	ch := make(chan agent.Event, 1)
+	m := newWithClock(nil, nil, nil, time.Time{})
+	m.agents.ApplyEvent(agent.Event{
+		Type: "PreToolUse", SessionID: "parent", Tool: "Agent",
+		ToolUseID: "toolu_abc", Timestamp: time.Now(),
+	})
+	m.agents.ApplyEvent(agent.Event{
+		Type: "PreToolUse", SessionID: "agent-xyz", ParentID: "parent",
+		Tool: "_subagent_init", Timestamp: time.Now(),
+	})
+
+	tailEvent := agent.Event{
+		Type: "PreToolUse", SessionID: "agent-xyz", Tool: "Bash", Timestamp: time.Now(),
+	}
+	next, cmd := m.Update(subagentTailMsg{event: tailEvent, ch: ch})
+	got := next.(Model)
+
+	// Event should be applied to the aliased node.
+	placeholder := got.agents.Nodes["toolu_abc"]
+	if placeholder == nil {
+		t.Fatal("expected placeholder to exist")
+	}
+	// Cmd must be non-nil (re-listen on same channel).
+	if cmd == nil {
+		t.Error("expected non-nil Cmd after subagentTailMsg (to continue tailing)")
 	}
 }

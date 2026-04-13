@@ -67,6 +67,13 @@ type Tree struct {
 	Roots            []string
 	pendingSubagents map[string][]string
 	sessionAlias     map[string]string
+	// activeDelegation maps a parent session ID to the placeholder node ID of
+	// the subagent it is currently delegating to. Set when PreToolUse[Agent]
+	// fires and cleared when the matching PostToolUse[Agent] (or Stop) arrives.
+	// While set, non-Agent tool events arriving for the parent session are
+	// re-routed to the subagent node — Claude Code fires those events under the
+	// parent's session_id even though they are the subagent's own tool calls.
+	activeDelegation map[string]string
 }
 
 func (t *Tree) SessionAlias(realSessionID string) (string, bool) {
@@ -79,10 +86,14 @@ func NewTree() Tree {
 		Nodes:            make(map[string]*Node),
 		pendingSubagents: make(map[string][]string),
 		sessionAlias:     make(map[string]string),
+		activeDelegation: make(map[string]string),
 	}
 }
 
 func (t *Tree) AddNode(n Node) {
+	if _, exists := t.Nodes[n.ID]; exists {
+		return // idempotent: skip if already present
+	}
 	t.Nodes[n.ID] = &n
 	if n.ParentID == "" {
 		t.Roots = append(t.Roots, n.ID)
@@ -127,6 +138,19 @@ func (t *Tree) ApplyEvent(e Event) {
 		}
 	}
 
+	// While a parent is actively delegating to a subagent, Claude Code fires the
+	// subagent's own tool events under the parent's session_id. Re-route them to
+	// the subagent placeholder so they don't pollute the parent's event list.
+	if e.Type == "PreToolUse" && e.Tool != "Agent" {
+		if placeholderID := t.activeDelegation[nodeID]; placeholderID != "" {
+			if sub := t.Nodes[placeholderID]; sub != nil {
+				sub.Events = append(sub.Events, e)
+				sub.Status = StatusRunning
+				return
+			}
+		}
+	}
+
 	node.Events = append(node.Events, e)
 
 	if node.Status == StatusError {
@@ -136,6 +160,7 @@ func (t *Tree) ApplyEvent(e Event) {
 	switch e.Type {
 	case "Stop":
 		node.Status = StatusIdle
+		delete(t.activeDelegation, nodeID)
 		for _, childID := range node.Children {
 			if child := t.Nodes[childID]; child != nil && child.Status == StatusRunning {
 				child.Status = StatusDone
@@ -143,6 +168,10 @@ func (t *Tree) ApplyEvent(e Event) {
 		}
 	case "SubagentStop":
 		node.Status = StatusDone
+	case "PostToolUse":
+		if e.Tool == "Agent" {
+			delete(t.activeDelegation, nodeID)
+		}
 	case "PreToolUse":
 		node.Status = StatusRunning
 		if e.Tool == "Agent" && e.ToolUseID != "" {
@@ -163,10 +192,11 @@ func (t *Tree) ApplyEvent(e Event) {
 				Children: []string{},
 				Tools:    []string{},
 				Skills:   []string{},
-				Events:   []Event{e},
+				Events:   []Event{},
 			}
 			t.AddNode(child)
 			t.pendingSubagents[e.SessionID] = append(t.pendingSubagents[e.SessionID], e.ToolUseID)
+			t.activeDelegation[nodeID] = e.ToolUseID
 		}
 	case "Error":
 		node.Status = StatusError

@@ -10,6 +10,7 @@ package ui
 
 import (
 	"math"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/hcarminati/orchard/internal/agent"
 	"github.com/hcarminati/orchard/internal/config"
+	"github.com/hcarminati/orchard/internal/watcher"
 )
 
 // panel identifies which panel currently has keyboard focus.
@@ -100,6 +102,22 @@ type hideSavedMsg struct{ err error }
 // it is only ever produced by waitForEvent.
 type hookEventMsg struct{ event agent.Event }
 
+// subagentScanResultMsg is returned by scanSubagentsCmd after scanning a
+// subagents directory. It carries one SubagentResult per file found so the
+// Update handler can inject historical events and start live tailing.
+type subagentScanResultMsg struct {
+	results  []watcher.SubagentResult
+	parentID string // session ID of the parent that spawned these subagents
+}
+
+// subagentTailMsg is returned by waitForTailEvent when a new event arrives
+// from a tailing goroutine. It carries the channel so the handler can
+// re-issue the wait command and keep tailing.
+type subagentTailMsg struct {
+	event agent.Event
+	ch    <-chan agent.Event
+}
+
 // idleTimeoutMsg is sent by scheduleIdle when a session has been quiet for
 // idleDuration. The gen field lets Update discard stale timers: if a new
 // tool call arrived after the timer was scheduled, the generation will have
@@ -154,6 +172,8 @@ type Model struct {
 	confirmHide     string                 // non-empty: session ID awaiting hide confirmation
 	hideStatusMsg   string                 // transient one-line status (e.g. "Cannot hide active session")
 	pendingSave     bool                   // true when hiddenSessions was mutated before Init() ran (auto-hide at startup)
+	subagentsRoot   string                 // base dir for subagent discovery: ~/.claude/projects/{cwdDir}/
+	watchedSubagents map[string]bool       // agentIDs we have already started watching (scan+tail), to prevent duplicates
 }
 
 // autoHideAge is how long a session must be inactive before it is automatically
@@ -165,13 +185,17 @@ const autoHideAge = 7 * 24 * time.Hour
 // nodes is the initial set of agents loaded from JSONL on startup (may be nil).
 // eventCh delivers incoming hook events from the embedded HTTP server; pass nil
 // to run without live updates (useful in tests).
+// subagentsRoot is the base directory for subagent discovery (e.g.
+// ~/.claude/projects/-Users-alice-myapp/). Pass "" to disable live subagent
+// file watching.
 // hiddenIDs is the set of session IDs loaded from hidden.json; pass nil for none.
 // expandedIDs is the set of root session IDs that were expanded on last exit,
 // loaded from state.json; pass nil for none. All root sessions start collapsed
 // by default — running sessions are auto-expanded, and any ID in expandedIDs
 // is also expanded.
-func New(nodes []agent.Node, eventCh <-chan agent.Event, hiddenIDs map[string]bool, expandedIDs map[string]bool) Model {
+func New(nodes []agent.Node, eventCh <-chan agent.Event, subagentsRoot string, hiddenIDs map[string]bool, expandedIDs map[string]bool) Model {
 	m := newWithClock(nodes, eventCh, hiddenIDs, time.Now())
+	m.subagentsRoot = subagentsRoot
 	// Collapse all root nodes by default.
 	for _, id := range m.agents.Roots {
 		if m.effectiveStatus(id) == agent.StatusRunning {
@@ -240,19 +264,20 @@ func newWithClock(nodes []agent.Node, eventCh <-chan agent.Event, hiddenIDs map[
 	}
 
 	return Model{
-		activePanel:     panelAgents,
-		agents:          tree,
-		hasSession:      len(nodes) > 0,
-		eventCh:         eventCh,
-		timerGen:        make(map[string]int),
-		expandedEvents:  make(map[string]bool),
-		lineHeightCache: make(map[lineHeightKey]int),
-		collapsed:       make(map[string]bool),
-		collapsedGroups: make(map[string]bool),
-		statusFilter:    filterAll,
-		eventScroll:     math.MaxInt, // will be clamped to real max on first render
-		hiddenSessions:  hiddenIDs,
-		pendingSave:     pendingSave,
+		activePanel:      panelAgents,
+		agents:           tree,
+		hasSession:       len(nodes) > 0,
+		eventCh:          eventCh,
+		timerGen:         make(map[string]int),
+		expandedEvents:   make(map[string]bool),
+		lineHeightCache:  make(map[lineHeightKey]int),
+		collapsed:        make(map[string]bool),
+		collapsedGroups:  make(map[string]bool),
+		statusFilter:     filterAll,
+		eventScroll:      math.MaxInt, // will be clamped to real max on first render
+		hiddenSessions:   hiddenIDs,
+		pendingSave:      pendingSave,
+		watchedSubagents: make(map[string]bool),
 	}
 }
 
@@ -363,6 +388,17 @@ func isToolEvent(e agent.Event) bool {
 		e.Type == "PermissionRequest" || e.Type == "Notification"
 }
 
+// isHiddenEvent reports whether the event at idx should be completely invisible
+// in the events panel — either because it is a PermissionRequest absorbed into
+// the preceding row, or because it is an internal sentinel injected by the
+// watcher (Tool == "_subagent_init") that has no user-visible meaning.
+func isHiddenEvent(events []agent.Event, idx int) bool {
+	if idx < len(events) && events[idx].Tool == "_subagent_init" {
+		return true
+	}
+	return isAbsorbedPermission(events, idx)
+}
+
 // isAbsorbedPermission reports whether the event at idx is a PermissionRequest
 // that should be collapsed into the preceding PreToolUse row. The three
 // conditions must all hold: same tool name, identical input, and arrival within
@@ -415,10 +451,9 @@ func wrappedLineCount(s string, width int) int {
 
 // linesForEvent returns the number of screen lines that the event at idx
 // occupies, accounting for whether it is currently expanded inline.
-// Absorbed PermissionRequest events return 0 — they are rendered inside the
-// preceding PreToolUse row and take no space of their own.
+// Hidden events (absorbed PermissionRequests and internal sentinels) return 0.
 func (m *Model) linesForEvent(node *agent.Node, idx int) int {
-	if isAbsorbedPermission(node.Events, idx) {
+	if isHiddenEvent(node.Events, idx) {
 		return 0
 	}
 	e := node.Events[idx]
@@ -531,7 +566,7 @@ func (m *Model) scrollEventToBottom() {
 	node := m.focusedNode()
 	if node != nil && len(node.Events) > 0 {
 		m.eventCursor = len(node.Events) - 1
-		for m.eventCursor > 0 && isAbsorbedPermission(node.Events, m.eventCursor) {
+		for m.eventCursor > 0 && isHiddenEvent(node.Events, m.eventCursor) {
 			m.eventCursor--
 		}
 	} else {
@@ -568,6 +603,32 @@ func scheduleDone(sessionID string, gen int) tea.Cmd {
 	return func() tea.Msg {
 		time.Sleep(doneDuration)
 		return doneTimeoutMsg{sessionID: sessionID, gen: gen}
+	}
+}
+
+// scanSubagentsCmd returns a Cmd that waits delay, then scans subagentsDir
+// for new subagent JSONL files, returning a subagentScanResultMsg. The delay
+// gives Claude Code time to create the file after the PreToolUse[Agent] hook fires.
+func scanSubagentsCmd(subagentsDir, parentID string, delay time.Duration) tea.Cmd {
+	return func() tea.Msg {
+		time.Sleep(delay)
+		return subagentScanResultMsg{
+			results:  watcher.Scan(subagentsDir, parentID),
+			parentID: parentID,
+		}
+	}
+}
+
+// waitForTailEvent returns a Cmd that blocks until the next event arrives on ch,
+// then wraps it in a subagentTailMsg so Update can both apply the event and
+// re-issue the wait. A closed channel causes a nil return (no message).
+func waitForTailEvent(ch <-chan agent.Event) tea.Cmd {
+	return func() tea.Msg {
+		e, ok := <-ch
+		if !ok {
+			return nil // channel closed; stop tailing
+		}
+		return subagentTailMsg{event: e, ch: ch}
 	}
 }
 
@@ -614,7 +675,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "right", "l":
 				if node := m.focusedNode(); node != nil && m.eventCursor < len(node.Events)-1 {
 					m.eventCursor++
-					for m.eventCursor < len(node.Events)-1 && isAbsorbedPermission(node.Events, m.eventCursor) {
+					for m.eventCursor < len(node.Events)-1 && isHiddenEvent(node.Events, m.eventCursor) {
 						m.eventCursor++
 					}
 					m.modalScroll = 0
@@ -623,7 +684,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.eventCursor > 0 {
 					m.eventCursor--
 					if node := m.focusedNode(); node != nil {
-						for m.eventCursor > 0 && isAbsorbedPermission(node.Events, m.eventCursor) {
+						for m.eventCursor > 0 && isHiddenEvent(node.Events, m.eventCursor) {
 							m.eventCursor--
 						}
 					}
@@ -658,7 +719,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.activePanel == panelEvents {
 				if node := m.focusedNode(); node != nil && m.eventCursor < len(node.Events)-1 {
 					m.eventCursor++
-					for m.eventCursor < len(node.Events)-1 && isAbsorbedPermission(node.Events, m.eventCursor) {
+					for m.eventCursor < len(node.Events)-1 && isHiddenEvent(node.Events, m.eventCursor) {
 						m.eventCursor++
 					}
 					m.scrollToCursor()
@@ -676,7 +737,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.eventCursor > 0 {
 					m.eventCursor--
 					if node := m.focusedNode(); node != nil {
-						for m.eventCursor > 0 && isAbsorbedPermission(node.Events, m.eventCursor) {
+						for m.eventCursor > 0 && isHiddenEvent(node.Events, m.eventCursor) {
 							m.eventCursor--
 						}
 					}
@@ -763,7 +824,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				node := m.focusedNode()
 				if node != nil {
 					m.eventCursor = 0
-					for m.eventCursor < len(node.Events)-1 && isAbsorbedPermission(node.Events, m.eventCursor) {
+					for m.eventCursor < len(node.Events)-1 && isHiddenEvent(node.Events, m.eventCursor) {
 						m.eventCursor++
 					}
 				}
@@ -917,6 +978,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "PreToolUse":
 			// A new tool call started — invalidate any pending idle or done timer.
 			m.timerGen[e.SessionID]++
+			// When the parent spawns a subagent, begin watching for its JSONL file.
+			// We delay 500 ms to give Claude Code time to create the file.
+			if e.Tool == "Agent" && m.subagentsRoot != "" {
+				subagentsDir := filepath.Join(m.subagentsRoot, e.SessionID, "subagents")
+				cmd = tea.Batch(cmd, scanSubagentsCmd(subagentsDir, e.SessionID, 500*time.Millisecond))
+			}
 		case "Stop", "SubagentStop":
 			// Turn ended. Schedule a done transition after doneDuration of inactivity.
 			// If the user sends another message before the timer fires, PreToolUse will
@@ -925,6 +992,55 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmd = tea.Batch(cmd, scheduleDone(e.SessionID, m.timerGen[e.SessionID]))
 		}
 		return m, cmd
+
+	// Subagent JSONL scan completed. Inject historical events into the tree for
+	// any newly discovered subagents and start live tailing each JSONL file.
+	case subagentScanResultMsg:
+		var cmds []tea.Cmd
+		for _, r := range msg.results {
+			if m.watchedSubagents[r.AgentID] {
+				continue // already watching; avoid duplicate injection and tailing
+			}
+			m.watchedSubagents[r.AgentID] = true
+			// Inject historical events. The first event carries ParentID so
+			// ApplyEvent claims the placeholder node created by PreToolUse[Agent].
+			for _, e := range r.Events {
+				m.agents.ApplyEvent(e)
+			}
+			// After claiming, update the node's Name and Prompt from meta.json.
+			// The placeholder was created with name=subagent_type; the description
+			// is richer and should take precedence.
+			nodeID := r.AgentID
+			if alias, ok := m.agents.SessionAlias(r.AgentID); ok {
+				nodeID = alias
+			}
+			if node, ok := m.agents.Nodes[nodeID]; ok {
+				if r.Name != "" {
+					node.Name = r.Name
+				}
+				if r.Description != "" {
+					node.Prompt = r.Description
+				}
+			}
+			// Start tailing for live updates. Each new line becomes a subagentTailMsg
+			// that re-issues the wait, keeping the tail alive until the file goes quiet.
+			ch := make(chan agent.Event, 64)
+			watcher.Tail(r.Target, msg.parentID, ch)
+			cmds = append(cmds, waitForTailEvent(ch))
+		}
+		if len(cmds) > 0 {
+			return m, tea.Batch(cmds...)
+		}
+
+	// A live event arrived from a tailing goroutine. Apply it to the tree and
+	// re-issue the wait so the tail continues.
+	case subagentTailMsg:
+		m.agents.ApplyEvent(msg.event)
+		m.hasSession = true
+		if n := m.focusedNode(); n != nil && n.ID == msg.event.SessionID {
+			m.scrollEventToBottom()
+		}
+		return m, waitForTailEvent(msg.ch)
 
 	// An idle timer fired. Transition to Idle only if the generation still matches
 	// (i.e. no new tool call arrived after the timer was scheduled).
