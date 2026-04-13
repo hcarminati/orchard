@@ -9,7 +9,9 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	// Bubbletea is the TUI framework. We alias it as `tea` — that's the convention
@@ -17,6 +19,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/hcarminati/orchard/internal/agent"
+	"github.com/hcarminati/orchard/internal/config"
 	"github.com/hcarminati/orchard/internal/hooks"
 	"github.com/hcarminati/orchard/internal/session"
 	"github.com/hcarminati/orchard/internal/ui"
@@ -79,6 +82,29 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	// Load hidden session IDs from ~/.config/orchard/hidden.json.
+	// Errors are non-fatal; the TUI starts with no hidden sessions.
+	hiddenIDs, err := config.LoadHidden()
+	if err != nil {
+		fmt.Fprintf(stderr, "warning: could not load hidden sessions: %v\n", err)
+	}
+
+	// Load expanded session IDs from ~/.config/orchard/state.json.
+	// Errors are non-fatal; all sessions start collapsed by default.
+	expandedIDs, err := config.LoadExpanded()
+	if err != nil {
+		fmt.Fprintf(stderr, "warning: could not load session state: %v\n", err)
+	}
+
+	// Compute the subagents root directory so the TUI can scan for new subagent
+	// JSONL files when a PreToolUse[Agent] event arrives.
+	// Path: ~/.claude/projects/{cwdDir}/ where cwdDir is cwd with "/" → "-".
+	var subagentsRoot string
+	if home, herr := os.UserHomeDir(); herr == nil {
+		cwdDir := strings.ReplaceAll(cwd, "/", "-")
+		subagentsRoot = filepath.Join(home, ".claude", "projects", cwdDir)
+	}
+
 	// Create a buffered channel for hook events.
 	// The buffer prevents the HTTP handler from stalling if the TUI is briefly busy.
 	eventCh := make(chan agent.Event, 256)
@@ -105,7 +131,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	// Think of the program as the event loop — it handles keyboard input,
 	// window resize events, and calls our model's Update/View functions.
 	p := tea.NewProgram(
-		ui.New(initialNodes, eventCh), // model seeded with session data + live event channel
+		ui.New(initialNodes, eventCh, subagentsRoot, hiddenIDs, expandedIDs), // model seeded with session data + live event channel
 		tea.WithAltScreen(),           // use the terminal's alternate screen buffer so we
 		// don't mess up the user's scrollback history
 		tea.WithMouseCellMotion(), // enable mouse click support for node focus

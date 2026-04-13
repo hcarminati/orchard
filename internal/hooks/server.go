@@ -1,8 +1,8 @@
 // Package hooks implements the embedded HTTP server that receives Claude Code hook events.
-// Claude Code fires hooks (PreToolUse, PostToolUse, Stop, SubagentStop, Notification)
-// by executing scripts; Orchard wires those scripts to POST JSON payloads to this server.
-// The server filters events by working directory so Orchard only processes events
-// belonging to its own session.
+// Claude Code fires hooks (PreToolUse, PostToolUse, Stop, SubagentStop, Notification,
+// PermissionRequest) by executing scripts; Orchard wires those scripts to POST JSON
+// payloads to this server. The server filters events by working directory so Orchard
+// only processes events belonging to its own session.
 package hooks
 
 import (
@@ -20,12 +20,18 @@ import (
 const maxBodyBytes = 1 << 20 // 1 MiB
 
 // payload mirrors the JSON body that Claude Code sends for each hook event.
-// All five event types share this structure; unused fields are zero-valued.
+// All six event types share this structure; unused fields are zero-valued.
 type payload struct {
-	SessionID     string `json:"session_id"`
-	HookEventName string `json:"hook_event_name"`
-	CWD           string `json:"cwd"`
-	ToolName      string `json:"tool_name"`
+	SessionID string `json:"session_id"`
+	// ParentSessionID is the session ID of the parent agent that spawned this one.
+	// Present in hook events fired by subagent sessions.
+	ParentSessionID string `json:"parent_session_id"`
+	HookEventName   string `json:"hook_event_name"`
+	CWD             string `json:"cwd"`
+	ToolName        string `json:"tool_name"`
+	// ToolUseID is the unique identifier for this tool call instance.
+	// Used to correlate PreToolUse[Agent] events with their subagent child nodes.
+	ToolUseID string `json:"tool_use_id"`
 	// ToolInput is the raw JSON object describing what the tool was called with.
 	// Present for PreToolUse and PostToolUse.
 	ToolInput json.RawMessage `json:"tool_input"`
@@ -108,10 +114,28 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		input = string(p.ToolInput)
 	}
 
+	eventType := p.HookEventName
+	toolName := p.ToolName
+
+	// Skill invocations arrive as PreToolUse[Skill]. Promote them to a first-class
+	// SkillTrigger event type and replace the tool name with the skill name so the
+	// event log can display them distinctly.
+	if eventType == "PreToolUse" && toolName == "Skill" && input != "" {
+		var inp struct {
+			Skill string `json:"skill"`
+		}
+		if err := json.Unmarshal([]byte(input), &inp); err == nil && inp.Skill != "" {
+			eventType = "SkillTrigger"
+			toolName = inp.Skill
+		}
+	}
+
 	e := agent.Event{
-		Type:      p.HookEventName,
+		Type:      eventType,
 		SessionID: p.SessionID,
-		Tool:      p.ToolName,
+		ParentID:  p.ParentSessionID,
+		Tool:      toolName,
+		ToolUseID: p.ToolUseID,
 		Input:     input,
 		Response:  p.ToolResponse,
 		Message:   p.Message,
