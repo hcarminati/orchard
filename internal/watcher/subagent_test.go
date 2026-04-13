@@ -223,8 +223,11 @@ func TestTail_NonAssistantLinesIgnored(t *testing.T) {
 
 	// Append a user message (no tool calls expected).
 	f, _ := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
-	f.WriteString(jsonlLine(t, "user", nil) + "\n")
+	_, err := f.WriteString(jsonlLine(t, "user", nil) + "\n")
 	f.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// Give the goroutine time to process.
 	time.Sleep(500 * time.Millisecond)
