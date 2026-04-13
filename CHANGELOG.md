@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-04-13
+
+### Added
+- Tab-based right panel: `[` / `]` cycles between Events and future tabs
+- Events tab: real events for the focused agent, scrollable with timestamps
+- Tool call inspector: expand any event with `enter` to see full input and output
+- Skill triggers surfaced as a distinct `SkillTrigger` event type with a `⚡` label and green color
+- Session context header in the Events tab for all nodes (root and subagent)
+
 ## [0.3.0] - 2026-04-10
 
 ### Added
