@@ -498,9 +498,9 @@ func (m *Model) clampEventScroll() {
 		m.eventScroll = 0
 		return
 	}
-	headerH := 0
-	if node.ParentID != "" {
-		headerH = 3
+	headerH := 2 // session/spawn line + divider
+	if node.ParentID != "" && node.Prompt != "" {
+		headerH = 3 // child with prompt adds a prompt line
 	}
 	viewH := max(1, m.height-footerHeight-2-headerH)
 	totalLines := 0
@@ -539,9 +539,9 @@ func (m *Model) scrollToCursor() {
 		return
 	}
 	m.eventCursor = max(0, min(m.eventCursor, len(node.Events)-1))
-	headerH := 0
-	if node.ParentID != "" {
-		headerH = 3
+	headerH := 2 // session/spawn line + divider
+	if node.ParentID != "" && node.Prompt != "" {
+		headerH = 3 // child with prompt adds a prompt line
 	}
 	viewH := max(1, m.height-footerHeight-2-headerH)
 	firstLine := 0
@@ -915,9 +915,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Right panel content area: move event cursor to clicked row.
 				const contentTop = 1
 				if node := m.focusedNode(); node != nil {
-					headerH := 0
-					if node.ParentID != "" {
-						headerH = 3
+					headerH := 2 // session/spawn line + divider
+					if node.ParentID != "" && node.Prompt != "" {
+						headerH = 3 // child with prompt adds a prompt line
 					}
 					lineOffset := msg.Y - contentTop - headerH + m.eventScroll
 					if lineOffset >= 0 {

@@ -247,3 +247,68 @@ func TestHandle_ParentSessionID_PropagatedToEvent(t *testing.T) {
 		t.Errorf("expected SessionID='child-session', got %q", e.SessionID)
 	}
 }
+
+func TestHandle_SkillTrigger_PromotedFromPreToolUse(t *testing.T) {
+	srv, ch := newTestServer(t)
+	defer srv.Close()
+
+	postJSON(t, srv, payload{
+		SessionID:     "session-skill",
+		HookEventName: "PreToolUse",
+		CWD:           testCWD,
+		ToolName:      "Skill",
+		ToolInput:     json.RawMessage(`{"skill":"build","args":""}`),
+	}).Body.Close()
+
+	e := receiveEvent(t, ch)
+	if e.Type != "SkillTrigger" {
+		t.Errorf("Type: got %q, want SkillTrigger", e.Type)
+	}
+	if e.Tool != "build" {
+		t.Errorf("Tool: got %q, want build (skill name extracted from input)", e.Tool)
+	}
+	if e.Input == "" {
+		t.Error("expected Input to be preserved on SkillTrigger event")
+	}
+}
+
+func TestHandle_OversizedBody_Returns400(t *testing.T) {
+	srv, _ := newTestServer(t)
+	defer srv.Close()
+
+	oversized := make([]byte, maxBodyBytes+1)
+	for i := range oversized {
+		oversized[i] = 'x'
+	}
+	resp, err := http.Post(srv.URL+"/", "application/json", bytes.NewReader(oversized))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected 400 for oversized body, got %d", resp.StatusCode)
+	}
+}
+
+func TestHandle_SkillTrigger_NoSkillField_PassesThroughAsPreToolUse(t *testing.T) {
+	// If the Skill tool input does not contain a "skill" field, the event should
+	// remain as a regular PreToolUse rather than being silently dropped.
+	srv, ch := newTestServer(t)
+	defer srv.Close()
+
+	postJSON(t, srv, payload{
+		SessionID:     "session-skill2",
+		HookEventName: "PreToolUse",
+		CWD:           testCWD,
+		ToolName:      "Skill",
+		ToolInput:     json.RawMessage(`{"name":"other"}`),
+	}).Body.Close()
+
+	e := receiveEvent(t, ch)
+	if e.Type != "PreToolUse" {
+		t.Errorf("Type: got %q, want PreToolUse (no skill field = no promotion)", e.Type)
+	}
+	if e.Tool != "Skill" {
+		t.Errorf("Tool: got %q, want Skill", e.Tool)
+	}
+}

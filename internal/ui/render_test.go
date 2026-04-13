@@ -248,6 +248,20 @@ func TestEventsPanel_SpawnContextHeader_NotShownForParentNode(t *testing.T) {
 	}
 }
 
+func TestEventsPanel_SessionHeader_ShownForRootNode(t *testing.T) {
+	parent := agent.Node{ID: "parent-abc123", Name: "session:parent-a", Status: agent.StatusDone}
+	m := newWithClock([]agent.Node{parent}, nil, nil, time.Time{})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	content := next.(Model).eventsContent()
+
+	if !strings.Contains(content, "session:parent-a") {
+		t.Errorf("expected session label in events panel for root node, got:\n%s", content)
+	}
+	if strings.Contains(content, "Spawned by") {
+		t.Errorf("expected no 'Spawned by' in root node events panel, got:\n%s", content)
+	}
+}
+
 func TestEventsPanel_SpawnContextHeader_TruncatesLongPrompt(t *testing.T) {
 	parent := agent.Node{ID: "parent-aabbccdd", Name: "session:parent-a", Status: agent.StatusDone}
 	child := agent.Node{
