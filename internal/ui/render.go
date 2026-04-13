@@ -1043,9 +1043,7 @@ func (m Model) buildModalContent(e agent.Event, node *agent.Node, home string, w
 
 	if e.Input != "" {
 		if e.Tool == "Edit" || e.Tool == "Write" {
-			for _, l := range formatInputAsDiff(e.Input, home, width) {
-				lines = append(lines, l)
-			}
+			lines = append(lines, formatInputAsDiff(e.Input, home, width)...)
 		} else {
 			lines = append(lines, muted.Render("Input:"))
 			for _, l := range formatKVModal(e.Input, home, width-2) {
