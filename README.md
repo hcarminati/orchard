@@ -11,18 +11,7 @@ Orchard visualizes your AI agent activity in real time — which agents spawned 
 
 Orchard runs in a terminal split pane **alongside** Claude Code. It reads Claude Code session data from `~/.claude/` and listens to hook events via an embedded local HTTP server. Claude Code keeps running normally. Orchard just gives you visibility into what's happening.
 
-```
-┌─────────────────────┬──────────────────────────────────────────┐
-│  orchard            │  Claude Code (running normally)          │
-│                     │                                          │
-│  Agents             │                                          │
-│  ● main-agent       │                                          │
-│    ├─ ● explore     │                                          │
-│    └─ ● plan        │                                          │
-│                     │                                          │
-│  tab: switch  q: quit                                          │
-└─────────────────────┴──────────────────────────────────────────┘
-```
+<img width="1391" height="688" alt="Screenshot 2026-04-13 at 1 45 09 PM" src="https://github.com/user-attachments/assets/39ab77d0-cba6-4557-8f50-11080a713169" />
 
 Split the terminal in tmux, iTerm2, VS Code, or any IDE terminal; Orchard works identically in all of them.
 
