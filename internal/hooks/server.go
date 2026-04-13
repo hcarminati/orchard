@@ -114,11 +114,27 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		input = string(p.ToolInput)
 	}
 
+	eventType := p.HookEventName
+	toolName := p.ToolName
+
+	// Skill invocations arrive as PreToolUse[Skill]. Promote them to a first-class
+	// SkillTrigger event type and replace the tool name with the skill name so the
+	// event log can display them distinctly.
+	if eventType == "PreToolUse" && toolName == "Skill" && input != "" {
+		var inp struct {
+			Skill string `json:"skill"`
+		}
+		if err := json.Unmarshal([]byte(input), &inp); err == nil && inp.Skill != "" {
+			eventType = "SkillTrigger"
+			toolName = inp.Skill
+		}
+	}
+
 	e := agent.Event{
-		Type:      p.HookEventName,
+		Type:      eventType,
 		SessionID: p.SessionID,
 		ParentID:  p.ParentSessionID,
-		Tool:      p.ToolName,
+		Tool:      toolName,
 		ToolUseID: p.ToolUseID,
 		Input:     input,
 		Response:  p.ToolResponse,

@@ -141,7 +141,9 @@ func (t *Tree) ApplyEvent(e Event) {
 	// While a parent is actively delegating to a subagent, Claude Code fires the
 	// subagent's own tool events under the parent's session_id. Re-route them to
 	// the subagent placeholder so they don't pollute the parent's event list.
-	if e.Type == "PreToolUse" && e.Tool != "Agent" {
+	// SkillTrigger events are also re-routed since skills invoked during delegation
+	// belong to the subagent's reasoning path.
+	if (e.Type == "PreToolUse" && e.Tool != "Agent") || e.Type == "SkillTrigger" {
 		if placeholderID := t.activeDelegation[nodeID]; placeholderID != "" {
 			if sub := t.Nodes[placeholderID]; sub != nil {
 				sub.Events = append(sub.Events, e)
@@ -167,11 +169,13 @@ func (t *Tree) ApplyEvent(e Event) {
 			}
 		}
 	case "SubagentStop":
-		node.Status = StatusDone
+		node.Status = StatusIdle
 	case "PostToolUse":
 		if e.Tool == "Agent" {
 			delete(t.activeDelegation, nodeID)
 		}
+	case "SkillTrigger":
+		node.Status = StatusRunning
 	case "PreToolUse":
 		node.Status = StatusRunning
 		if e.Tool == "Agent" && e.ToolUseID != "" {

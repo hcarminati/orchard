@@ -386,7 +386,7 @@ func TestEventsContent_ExpandedToolEvent_ShowsFullInputAndOutput(t *testing.T) {
 
 	// Click the event row to expand inline (cursor is already on the only event).
 	leftW := 120 * 35 / 100
-	next, _ = m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: leftW + 1, Y: 1})
+	next, _ = m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: leftW + 1, Y: 3})
 	m = next.(Model)
 
 	content := m.eventsContent()
@@ -426,7 +426,7 @@ func TestEventsContent_ClickTogglesExpand(t *testing.T) {
 	m = next.(Model)
 
 	leftW := 120 * 35 / 100
-	click := tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: leftW + 1, Y: 1}
+	click := tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: leftW + 1, Y: 3}
 
 	// First click: expand.
 	next, _ = m.Update(click)
@@ -625,10 +625,11 @@ func TestEventsContent_AbsorbedPermission_HidesPermissionRow(t *testing.T) {
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	content := next.(Model).eventsContent()
 
-	// Only one row should appear — the PermissionRequest row is absorbed.
+	// Only one event row should appear — the PermissionRequest row is absorbed.
+	// Total lines = 2 header lines (session label + divider) + 1 event row.
 	lines := strings.Split(strings.TrimRight(content, "\n"), "\n")
-	if len(lines) != 1 {
-		t.Errorf("expected 1 visible row (absorbed), got %d lines:\n%s", len(lines), content)
+	if len(lines) != 3 {
+		t.Errorf("expected 3 lines (2 header + 1 event row), got %d lines:\n%s", len(lines), content)
 	}
 	// The PreToolUse row should show ⚠ instead of ▶.
 	if !strings.Contains(content, "⚠") {
@@ -703,7 +704,7 @@ func TestEventsContent_Notification_Expandable(t *testing.T) {
 
 	// Click the row to expand inline.
 	leftW := 120 * 35 / 100
-	next, _ = m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: leftW + 1, Y: 1})
+	next, _ = m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: leftW + 1, Y: 3})
 	m = next.(Model)
 
 	content := m.eventsContent()
@@ -738,7 +739,7 @@ func TestEventsContent_Notification_ExpandedShowsDownArrow(t *testing.T) {
 
 	// Click to expand inline.
 	leftW := 120 * 35 / 100
-	next, _ = m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: leftW + 1, Y: 1})
+	next, _ = m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: leftW + 1, Y: 3})
 	m = next.(Model)
 
 	// Expanded — ► replaced by ▼, message no longer inline.
@@ -855,7 +856,7 @@ func TestEventsContent_PermissionRequest_Expandable(t *testing.T) {
 
 	// Click the row to expand inline.
 	leftW := 120 * 35 / 100
-	next, _ = m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: leftW + 1, Y: 1})
+	next, _ = m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: leftW + 1, Y: 3})
 	m = next.(Model)
 
 	content := m.eventsContent()
@@ -1007,7 +1008,7 @@ func TestEventsContent_ExpandedLongInput_LineWrapped(t *testing.T) {
 
 	// Click the row to expand inline (cursor is on the only event).
 	leftW := 80 * 35 / 100
-	next, _ = m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: leftW + 1, Y: 1})
+	next, _ = m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: leftW + 1, Y: 3})
 	m = next.(Model)
 
 	rightW := 80 - leftW
@@ -1447,7 +1448,7 @@ func jsonString(s string) string {
 func TestModal_DoubleClickOpens(t *testing.T) {
 	m := makeModalModel("PreToolUse", "Bash", `{"command":"ls"}`, "", "")
 	leftW := 120 * 35 / 100
-	click := tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: leftW + 1, Y: 1}
+	click := tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: leftW + 1, Y: 3}
 
 	// First click: select / expand inline.
 	next, _ := m.Update(click)
@@ -1461,5 +1462,105 @@ func TestModal_DoubleClickOpens(t *testing.T) {
 	m = next.(Model)
 	if !m.modalOpen {
 		t.Error("expected modal open after double-click")
+	}
+}
+
+// SkillTrigger tests
+
+func TestEventsContent_SkillTrigger_ShowsSkillIcon(t *testing.T) {
+	nodes := []agent.Node{
+		{
+			ID:     "s1xxxxxxxx",
+			Name:   "session:s1xxxxxx",
+			Status: agent.StatusRunning,
+			Events: []agent.Event{
+				{
+					Type:      "SkillTrigger",
+					Tool:      "build",
+					Input:     `{"skill":"build","args":""}`,
+					SessionID: "s1xxxxxxxx",
+					Timestamp: time.Now(),
+				},
+			},
+		},
+	}
+	m := newWithClock(nodes, nil, nil, time.Time{})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	content := next.(Model).eventsContent()
+
+	if !strings.Contains(content, "SkillTrigger") {
+		t.Errorf("expected 'SkillTrigger' event type in content, got: %q", content)
+	}
+	if !strings.Contains(content, "⚡") {
+		t.Errorf("expected '⚡' icon in skill trigger row, got: %q", content)
+	}
+	if !strings.Contains(content, "build") {
+		t.Errorf("expected skill name 'build' in skill trigger row, got: %q", content)
+	}
+}
+
+func TestEventsContent_SkillTrigger_NotExpandable(t *testing.T) {
+	nodes := []agent.Node{
+		{
+			ID:     "s1xxxxxxxx",
+			Name:   "session:s1xxxxxx",
+			Status: agent.StatusRunning,
+			Events: []agent.Event{
+				{
+					Type:      "SkillTrigger",
+					Tool:      "check",
+					Input:     `{"skill":"check","args":""}`,
+					SessionID: "s1xxxxxxxx",
+					Timestamp: time.Now(),
+				},
+			},
+		},
+	}
+	m := newWithClock(nodes, nil, nil, time.Time{})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = next.(Model)
+
+	content := m.eventsContent()
+
+	// No expand/collapse arrows — skill triggers are not expandable.
+	if strings.Contains(content, "▶") {
+		t.Errorf("expected no '▶' on SkillTrigger row, got: %q", content)
+	}
+	if strings.Contains(content, "▼") {
+		t.Errorf("expected no '▼' on SkillTrigger row, got: %q", content)
+	}
+
+	// Clicking should not produce an Input: block.
+	leftW := 120 * 35 / 100
+	click := tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: leftW + 1, Y: 3}
+	next, _ = m.Update(click)
+	content = next.(Model).eventsContent()
+	if strings.Contains(content, "Input:") {
+		t.Errorf("expected SkillTrigger to be non-expandable (no 'Input:'), got: %q", content)
+	}
+}
+
+func TestApplyEvent_SkillTrigger_SetsRunning(t *testing.T) {
+	tree := agent.NewTree()
+	tree.AddNode(agent.NewNode("sess1"))
+
+	tree.ApplyEvent(agent.Event{
+		Type:      "SkillTrigger",
+		SessionID: "sess1",
+		Tool:      "build",
+	})
+
+	node := tree.Nodes["sess1"]
+	if node.Status != agent.StatusRunning {
+		t.Errorf("expected StatusRunning after SkillTrigger, got %v", node.Status)
+	}
+	if len(node.Events) != 1 {
+		t.Fatalf("expected 1 event stored, got %d", len(node.Events))
+	}
+	if node.Events[0].Type != "SkillTrigger" {
+		t.Errorf("expected stored event type 'SkillTrigger', got %q", node.Events[0].Type)
+	}
+	if node.Events[0].Tool != "build" {
+		t.Errorf("expected stored event tool 'build', got %q", node.Events[0].Tool)
 	}
 }

@@ -399,8 +399,11 @@ func (m Model) eventsContent() string {
 	innerW := m.innerWidth()
 	viewH := max(1, m.height-footerHeight-2)
 
-	// Spawn context header — only for child subagent nodes.
+	// Context header shown for all nodes: "Spawned by" for child subagents,
+	// session identification for root sessions.
 	var headerLines []string
+	mStyle := lipgloss.NewStyle().Foreground(colorMuted)
+	divider := strings.Repeat("─", min(innerW, 48))
 	if node.ParentID != "" {
 		parentLabel := "session:" + node.ParentID
 		if len(node.ParentID) > 8 {
@@ -415,14 +418,26 @@ func (m Model) eventsContent() string {
 		if len([]rune(prompt)) > 80 {
 			prompt = string([]rune(prompt)[:80]) + "…"
 		}
-		promptLine := "Prompt: " + prompt
+		promptLine := "prompt: " + prompt
 
-		divider := strings.Repeat("─", min(innerW, 48))
-
-		mStyle := lipgloss.NewStyle().Foreground(colorMuted)
 		headerLines = []string{
 			mStyle.Render(spawnLine),
-			mStyle.Render(promptLine),
+		}
+		if prompt != "" {
+			headerLines = append(headerLines, mStyle.Render(promptLine))
+		}
+		headerLines = append(headerLines, mStyle.Render(divider))
+	} else {
+		sessionLabel := node.Name
+		if sessionLabel == "" {
+			if len(node.ID) > 8 {
+				sessionLabel = "session:" + node.ID[:8]
+			} else {
+				sessionLabel = "session:" + node.ID
+			}
+		}
+		headerLines = []string{
+			mStyle.Render(sessionLabel),
 			mStyle.Render(divider),
 		}
 	}
@@ -490,6 +505,13 @@ func (m Model) eventsContent() string {
 			if expanded {
 				header += "  " + mutedStyle.Render("▼")
 			}
+		case "SkillTrigger":
+			skillStyle := lipgloss.NewStyle().Foreground(colorGreen)
+			label := "⚡"
+			if e.Tool != "" {
+				label += " " + e.Tool
+			}
+			header += "  " + skillStyle.Render(label)
 		default:
 			if e.Tool != "" {
 				header += "  " + lipgloss.NewStyle().Foreground(toolColor(e.Tool)).Render(e.Tool)

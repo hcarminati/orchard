@@ -128,14 +128,16 @@ func TestApplyEvent_StopSetsIdle(t *testing.T) {
 	}
 }
 
-func TestApplyEvent_SubagentStopSetsDone(t *testing.T) {
+func TestApplyEvent_SubagentStopSetsIdle(t *testing.T) {
 	tree := NewTree()
 	tree.AddNode(Node{ID: "s1", Status: StatusRunning})
 	tree.ApplyEvent(Event{Type: "SubagentStop", SessionID: "s1", Timestamp: time.Now()})
 
-	// SubagentStop means the subagent's session is permanently finished.
-	if tree.Nodes["s1"].Status != StatusDone {
-		t.Errorf("expected StatusDone after SubagentStop, got %d", tree.Nodes["s1"].Status)
+	// SubagentStop fires under the parent's session_id (not the subagent's),
+	// so it returns the parent to Idle — not Done. The Stop handler's child-sweep
+	// already marks the subagent placeholder Done.
+	if tree.Nodes["s1"].Status != StatusIdle {
+		t.Errorf("expected StatusIdle after SubagentStop, got %d", tree.Nodes["s1"].Status)
 	}
 }
 
@@ -643,6 +645,46 @@ func TestApplyEvent_DelegationClearedOnPostToolUseAgent(t *testing.T) {
 	// Expect: Agent, PostToolUse(Agent), Bash — all three on parent.
 	if len(parent.Events) != 3 {
 		t.Errorf("expected 3 events on parent after delegation cleared, got %d: %v", len(parent.Events), tools)
+	}
+}
+
+func TestSessionAlias_ReturnsFalseWhenNotSet(t *testing.T) {
+	tree := NewTree()
+	_, ok := tree.SessionAlias("no-such-id")
+	if ok {
+		t.Error("expected no alias for unknown session ID")
+	}
+}
+
+func TestSessionAlias_ReturnsPlaceholderAfterClaim(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "parent", Status: StatusRunning})
+
+	// Parent spawns a subagent — placeholder is created under tool_use_id.
+	tree.ApplyEvent(Event{
+		Type:      "PreToolUse",
+		SessionID: "parent",
+		Tool:      "Agent",
+		ToolUseID: "toolu_placeholder",
+		Input:     `{"subagent_type":"Explore"}`,
+		Timestamp: time.Now(),
+	})
+
+	// Real subagent arrives — triggers alias registration in ApplyEvent.
+	tree.ApplyEvent(Event{
+		Type:      "PreToolUse",
+		SessionID: "real-session-id",
+		ParentID:  "parent",
+		Tool:      "Read",
+		Timestamp: time.Now(),
+	})
+
+	got, ok := tree.SessionAlias("real-session-id")
+	if !ok {
+		t.Fatal("expected alias to be registered for real-session-id")
+	}
+	if got != "toolu_placeholder" {
+		t.Errorf("expected alias 'toolu_placeholder', got %q", got)
 	}
 }
 

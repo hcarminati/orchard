@@ -22,6 +22,25 @@ func writeTempJSONL(t *testing.T, dir, name string, lines []string) string {
 	return path
 }
 
+func TestParseTimestamp_ValidRFC3339(t *testing.T) {
+	ts := parseTimestamp("2026-01-01T15:04:05.000Z")
+	if ts.IsZero() {
+		t.Error("expected non-zero time for valid RFC3339 input")
+	}
+	if ts.UTC().Year() != 2026 || ts.UTC().Month() != 1 || ts.UTC().Day() != 1 {
+		t.Errorf("unexpected date: %v", ts)
+	}
+}
+
+func TestParseTimestamp_InvalidInput_ReturnsZero(t *testing.T) {
+	for _, s := range []string{"", "not-a-date", "2026/01/01"} {
+		ts := parseTimestamp(s)
+		if !ts.IsZero() {
+			t.Errorf("parseTimestamp(%q) = %v, want zero time", s, ts)
+		}
+	}
+}
+
 func TestCwdToDir(t *testing.T) {
 	cases := []struct {
 		cwd  string
