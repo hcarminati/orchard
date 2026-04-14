@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 )
 
@@ -23,6 +24,26 @@ const (
 	ModelUnknown Model = ""
 )
 
+// ParseModel normalizes a raw model ID string (e.g. "claude-sonnet-4-6") to
+// one of the known Model constants. Returns ModelUnknown for empty input and
+// the raw string as a Model for unrecognized model names so callers can still
+// display them.
+func ParseModel(s string) Model {
+	lower := strings.ToLower(s)
+	switch {
+	case strings.Contains(lower, "haiku"):
+		return ModelHaiku
+	case strings.Contains(lower, "sonnet"):
+		return ModelSonnet
+	case strings.Contains(lower, "opus"):
+		return ModelOpus
+	case s == "":
+		return ModelUnknown
+	default:
+		return Model(s)
+	}
+}
+
 type Event struct {
 	Type      string
 	SessionID string
@@ -32,6 +53,7 @@ type Event struct {
 	Input     string
 	Response  string
 	Message   string
+	Model     Model
 	Timestamp time.Time
 }
 
@@ -154,6 +176,10 @@ func (t *Tree) ApplyEvent(e Event) {
 	}
 
 	node.Events = append(node.Events, e)
+
+	if e.Model != ModelUnknown {
+		node.Model = e.Model
+	}
 
 	if node.Status == StatusError {
 		return

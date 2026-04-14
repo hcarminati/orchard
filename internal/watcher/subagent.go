@@ -62,6 +62,7 @@ type subagentRecord struct {
 
 type rawMessage struct {
 	Role       string          `json:"role"`
+	Model      string          `json:"model"`
 	ContentRaw json.RawMessage `json:"content"`
 }
 
@@ -174,6 +175,7 @@ func parseJSONL(path, agentID, parentID string) ([]agent.Event, int64) {
 		if rec.Message.Role != "assistant" {
 			continue
 		}
+		model := agent.ParseModel(rec.Message.Model)
 		var blocks []contentBlock
 		if err := json.Unmarshal(rec.Message.ContentRaw, &blocks); err != nil {
 			continue
@@ -187,6 +189,7 @@ func parseJSONL(path, agentID, parentID string) ([]agent.Event, int64) {
 					ParentID:  parentID,
 					Tool:      block.Name,
 					Input:     string(block.Input),
+					Model:     model,
 					Timestamp: ts,
 				})
 			}
@@ -247,6 +250,7 @@ func tailJSONL(target TailTarget, parentID string, out chan<- agent.Event) {
 		if rec.Message.Role != "assistant" {
 			continue
 		}
+		model := agent.ParseModel(rec.Message.Model)
 		var blocks []contentBlock
 		if jsonErr := json.Unmarshal(rec.Message.ContentRaw, &blocks); jsonErr != nil {
 			continue
@@ -261,6 +265,7 @@ func tailJSONL(target TailTarget, parentID string, out chan<- agent.Event) {
 					ParentID:  parentID,
 					Tool:      block.Name,
 					Input:     string(block.Input),
+					Model:     model,
 					Timestamp: ts,
 				}:
 				default:

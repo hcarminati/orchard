@@ -312,3 +312,35 @@ func TestHandle_SkillTrigger_NoSkillField_PassesThroughAsPreToolUse(t *testing.T
 		t.Errorf("Tool: got %q, want Skill", e.Tool)
 	}
 }
+
+func TestHandle_ModelParsedAndForwarded(t *testing.T) {
+	tests := []struct {
+		rawModel  string
+		wantModel agent.Model
+	}{
+		{"claude-sonnet-4-6", agent.ModelSonnet},
+		{"claude-haiku-4-5-20251001", agent.ModelHaiku},
+		{"claude-opus-4-6", agent.ModelOpus},
+		{"", agent.ModelUnknown},
+		{"some-future-model", agent.Model("some-future-model")},
+	}
+
+	for _, tc := range tests {
+		srv, ch := newTestServer(t)
+
+		postJSON(t, srv, payload{
+			SessionID:     "session-model",
+			HookEventName: "PreToolUse",
+			CWD:           testCWD,
+			ToolName:      "Bash",
+			Model:         tc.rawModel,
+		}).Body.Close()
+
+		e := receiveEvent(t, ch)
+		if e.Model != tc.wantModel {
+			t.Errorf("rawModel=%q: got Model=%q, want %q", tc.rawModel, e.Model, tc.wantModel)
+		}
+
+		srv.Close()
+	}
+}

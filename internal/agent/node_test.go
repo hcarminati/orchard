@@ -708,3 +708,72 @@ func TestNodeFields_ModelToolsSkillsPrompt(t *testing.T) {
 		t.Errorf("unexpected Prompt: %q", n.Prompt)
 	}
 }
+
+func TestParseModel(t *testing.T) {
+	tests := []struct {
+		input string
+		want  Model
+	}{
+		{"claude-haiku-4-5-20251001", ModelHaiku},
+		{"claude-haiku-3-5", ModelHaiku},
+		{"claude-sonnet-4-6", ModelSonnet},
+		{"claude-sonnet-3-7", ModelSonnet},
+		{"claude-opus-4-6", ModelOpus},
+		{"claude-opus-4", ModelOpus},
+		{"", ModelUnknown},
+		// Unknown model names are passed through as-is.
+		{"some-future-model", Model("some-future-model")},
+		// Case-insensitive matching.
+		{"CLAUDE-HAIKU", ModelHaiku},
+		{"Claude-Opus-4", ModelOpus},
+	}
+	for _, tc := range tests {
+		got := ParseModel(tc.input)
+		if got != tc.want {
+			t.Errorf("ParseModel(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestApplyEvent_SetsModelOnNode(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "s1", Status: StatusRunning})
+
+	tree.ApplyEvent(Event{
+		Type:      "PreToolUse",
+		SessionID: "s1",
+		Tool:      "Bash",
+		Model:     ModelSonnet,
+		Timestamp: time.Now(),
+	})
+
+	node := tree.Nodes["s1"]
+	if node.Model != ModelSonnet {
+		t.Errorf("expected node.Model = ModelSonnet, got %q", node.Model)
+	}
+}
+
+func TestApplyEvent_ModelUpdatesOnSubsequentEvents(t *testing.T) {
+	// Model can be updated by later events — last non-unknown wins.
+	tree := NewTree()
+	tree.AddNode(Node{ID: "s1", Status: StatusRunning})
+
+	tree.ApplyEvent(Event{Type: "PreToolUse", SessionID: "s1", Model: ModelHaiku, Timestamp: time.Now()})
+	tree.ApplyEvent(Event{Type: "PreToolUse", SessionID: "s1", Model: ModelSonnet, Timestamp: time.Now()})
+
+	if tree.Nodes["s1"].Model != ModelSonnet {
+		t.Errorf("expected model updated to ModelSonnet, got %q", tree.Nodes["s1"].Model)
+	}
+}
+
+func TestApplyEvent_ModelUnknownDoesNotOverwrite(t *testing.T) {
+	// An event with no model should not clear a previously set model.
+	tree := NewTree()
+	tree.AddNode(Node{ID: "s1", Status: StatusRunning, Model: ModelOpus})
+
+	tree.ApplyEvent(Event{Type: "PreToolUse", SessionID: "s1", Model: ModelUnknown, Timestamp: time.Now()})
+
+	if tree.Nodes["s1"].Model != ModelOpus {
+		t.Errorf("expected model to remain ModelOpus, got %q", tree.Nodes["s1"].Model)
+	}
+}
