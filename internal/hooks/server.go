@@ -39,6 +39,8 @@ type payload struct {
 	ToolResponse string `json:"tool_response"`
 	// Message is the notification text. Present for Notification events.
 	Message string `json:"message"`
+	// Model is the model ID used by the agent for this session (e.g. "claude-sonnet-4-6").
+	Model string `json:"model"`
 }
 
 // Server is an embedded HTTP server that receives and forwards Claude Code hook events.
@@ -139,6 +141,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		Input:     input,
 		Response:  p.ToolResponse,
 		Message:   p.Message,
+		Model:     agent.ParseModel(p.Model),
 		Timestamp: time.Now(),
 	}
 

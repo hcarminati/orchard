@@ -248,9 +248,40 @@ func (m Model) agentsContent() string {
 	leftW := m.width * 35 / 100
 	innerW := max(1, leftW-2)
 
-	// truncate clamps a rendered line to innerW visible columns. If the line
-	// is wider than innerW, it is cut to innerW-1 and an ellipsis is appended
-	// so the user knows the name continues beyond the panel edge.
+	// Each agent row uses a fixed two-zone layout:
+	//   [name area — nameAreaW cols][2 spaces][badge — modelColW cols]
+	// The badge column is always reserved so it appears at a consistent right
+	// position. The name area is truncated (with "…") or space-padded to fill.
+	const modelColW = 6 // "sonnet" is the longest known model name
+	const modelSepW = 2 // spaces between name area and badge column
+	nameAreaW := max(1, innerW-modelSepW-modelColW)
+
+	// fitNameArea truncates or space-pads s to exactly w visible columns.
+	fitNameArea := func(s string, w int) string {
+		sw := lipgloss.Width(s)
+		if sw > w {
+			if w <= 1 {
+				return "…"
+			}
+			return lipgloss.NewStyle().MaxWidth(w-1).Render(s) + "…"
+		}
+		return s + strings.Repeat(" ", w-sw)
+	}
+
+	// badgeCol renders the model name in muted grey, padded to modelColW columns.
+	// When no model is set the column is blank, keeping the layout stable.
+	badgeCol := func(mod agent.Model) string {
+		raw := string(mod)
+		runes := []rune(raw)
+		if len(runes) > modelColW {
+			raw = string(runes[:modelColW])
+			runes = []rune(raw)
+		}
+		rendered := lipgloss.NewStyle().Foreground(colorMuted).Render(raw)
+		return rendered + strings.Repeat(" ", modelColW-len(runes))
+	}
+
+	// truncate is used for group header rows only, which don't carry a badge.
 	truncate := func(line string) string {
 		if lipgloss.Width(line) <= innerW {
 			return line
@@ -337,14 +368,15 @@ func (m Model) agentsContent() string {
 			if n.Winner {
 				indicator = " ✓"
 			}
-			line := prefix + icon + dot(statusColor(n.Status)) + " " + n.Name + indicator
+			nameContent := prefix + icon + dot(statusColor(n.Status)) + " " + n.Name + indicator
 			if n.Status == agent.StatusError && n.ErrorMsg != "" {
-				line += " " + lipgloss.NewStyle().Foreground(colorRed).Render("✗ "+n.ErrorMsg)
+				nameContent += " " + lipgloss.NewStyle().Foreground(colorRed).Render("✗ "+n.ErrorMsg)
 			}
+			line := fitNameArea(nameContent, nameAreaW) + strings.Repeat(" ", modelSepW) + badgeCol(n.Model)
 			if hasWinner && !n.Winner {
 				line = lipgloss.NewStyle().Foreground(colorMuted).Render(line)
 			}
-			lines = append(lines, truncate(line))
+			lines = append(lines, line)
 			continue
 		}
 
@@ -367,11 +399,12 @@ func (m Model) agentsContent() string {
 				prefix = "  "
 			}
 		}
-		line := prefix + connector + icon + dot(statusColor(n.Status)) + " " + n.Name
+		nameContent := prefix + connector + icon + dot(statusColor(n.Status)) + " " + n.Name
 		if n.Status == agent.StatusError && n.ErrorMsg != "" {
-			line += " " + lipgloss.NewStyle().Foreground(colorRed).Render("✗ "+n.ErrorMsg)
+			nameContent += " " + lipgloss.NewStyle().Foreground(colorRed).Render("✗ "+n.ErrorMsg)
 		}
-		lines = append(lines, truncate(line))
+		line := fitNameArea(nameContent, nameAreaW) + strings.Repeat(" ", modelSepW) + badgeCol(n.Model)
+		lines = append(lines, line)
 	}
 
 	if len(lines) == 0 {

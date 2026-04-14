@@ -532,7 +532,7 @@ func TestParseSubagentEvents_ExtractsToolUseBlocks(t *testing.T) {
 {"type":"assistant","agentId":"xyz","sessionId":"parent","timestamp":"2026-01-01T10:00:02Z","message":{"role":"assistant","content":[{"type":"tool_use","name":"Glob","input":{"pattern":"**/*.go"}}]}}
 `)
 
-	events := parseSubagentEvents(path, "xyz")
+	events, _ := parseSubagentEvents(path, "xyz")
 	if len(events) != 2 {
 		t.Fatalf("expected 2 events, got %d", len(events))
 	}
@@ -598,7 +598,7 @@ func TestLoadSubagentNodes_SetsPromptAndSpawnedAt(t *testing.T) {
 }
 
 func TestParseSubagentEvents_MissingFileReturnsNil(t *testing.T) {
-	events := parseSubagentEvents("/does/not/exist.jsonl", "xyz")
+	events, _ := parseSubagentEvents("/does/not/exist.jsonl", "xyz")
 	if events != nil {
 		t.Errorf("expected nil for missing file, got %v", events)
 	}
