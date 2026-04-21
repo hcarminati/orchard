@@ -313,14 +313,13 @@ func TestEventsContent_LipglossWidth_NotLen(t *testing.T) {
 		},
 	}
 	m := newWithClock(nodes, nil, nil, time.Time{})
-	next, _ := m.Update(tea.WindowSizeMsg{Width: 40, Height: 10})
-	content := next.(Model).eventsContent()
+	m2, _ := m.Update(tea.WindowSizeMsg{Width: 40, Height: 10})
+	mm := m2.(Model)
+	content := mm.eventsContent()
 	if content == "" {
 		t.Error("expected non-empty events content at narrow terminal width")
 	}
-	leftW := 40 * 35 / 100
-	rightW := 40 - leftW
-	innerW := rightW - 2
+	innerW := mm.innerWidth()
 	for _, line := range strings.Split(content, "\n") {
 		if lw := lipgloss.Width(line); lw > innerW {
 			t.Errorf("line exceeds innerW=%d (lipgloss.Width=%d): %q", innerW, lw, line)
@@ -488,7 +487,7 @@ func TestEventsContent_NotificationShowsArrowAndMessage(t *testing.T) {
 		},
 	}
 	m := newWithClock(nodes, nil, nil, time.Time{})
-	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 160, Height: 40})
 	content := next.(Model).eventsContent()
 
 	if !strings.Contains(content, "Notification") {
@@ -502,7 +501,7 @@ func TestEventsContent_NotificationShowsArrowAndMessage(t *testing.T) {
 	}
 }
 
-func TestEventsContent_NotificationLongMessage_TruncatedAt40(t *testing.T) {
+func TestEventsContent_NotificationLongMessage_ShowsFullWhenFits(t *testing.T) {
 	msg := strings.Repeat("x", 50)
 	nodes := []agent.Node{
 		{
@@ -515,16 +514,12 @@ func TestEventsContent_NotificationLongMessage_TruncatedAt40(t *testing.T) {
 		},
 	}
 	m := newWithClock(nodes, nil, nil, time.Time{})
-	// Wide terminal so panel width doesn't interfere with the 40-char truncation check.
+	// Wide terminal: 50-char message fits without truncation.
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 300, Height: 40})
 	content := next.(Model).eventsContent()
 
-	// 50 x's truncated to 40 + "…" — the full 50-char string must not appear.
-	if strings.Contains(content, msg) {
-		t.Errorf("expected message truncated at 40 chars, but full message appeared: %q", content)
-	}
-	if !strings.Contains(content, strings.Repeat("x", 40)) {
-		t.Errorf("expected first 40 chars of message in content, got: %q", content)
+	if !strings.Contains(content, msg) {
+		t.Errorf("expected full message on wide terminal, got: %q", content)
 	}
 }
 
@@ -822,7 +817,7 @@ func TestEventsContent_PermissionRequestNoTool_FallsBackToMessage(t *testing.T) 
 		},
 	}
 	m := newWithClock(nodes, nil, nil, time.Time{})
-	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 160, Height: 40})
 	content := next.(Model).eventsContent()
 
 	if !strings.Contains(content, "⚠") {
@@ -886,7 +881,7 @@ func TestEventsContent_PermissionRequest_Bash_ShowsCommand(t *testing.T) {
 		},
 	}
 	m := newWithClock(nodes, nil, nil, time.Time{})
-	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 160, Height: 40})
 	content := next.(Model).eventsContent()
 
 	if !strings.Contains(content, "►") {
@@ -945,7 +940,7 @@ func TestEventsContent_PermissionRequest_Write_ShowsFilePath(t *testing.T) {
 		},
 	}
 	m := newWithClock(nodes, nil, nil, time.Time{})
-	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 160, Height: 40})
 	content := next.(Model).eventsContent()
 
 	if !strings.Contains(content, "/tmp/output.go") {

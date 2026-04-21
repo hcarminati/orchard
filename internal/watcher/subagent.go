@@ -60,10 +60,12 @@ type subagentRecord struct {
 	Message   rawMessage `json:"message"`
 }
 
+// usageData mirrors the usage object in a Claude API assistant message.
 type rawMessage struct {
 	Role       string          `json:"role"`
 	Model      string          `json:"model"`
 	ContentRaw json.RawMessage `json:"content"`
+	Usage      agent.Usage     `json:"usage"`
 }
 
 type contentBlock struct {
@@ -176,11 +178,23 @@ func parseJSONL(path, agentID, parentID string) ([]agent.Event, int64) {
 			continue
 		}
 		model := agent.ParseModel(rec.Message.Model)
+		ts := parseTimestamp(rec.Timestamp)
+
+		// Emit a TokenUsage event for every assistant message that carries usage.
+		if !rec.Message.Usage.IsZero() {
+			events = append(events, agent.Event{
+				Type:      "TokenUsage",
+				SessionID: agentID,
+				ParentID:  parentID,
+				Usage:     rec.Message.Usage,
+				Timestamp: ts,
+			})
+		}
+
 		var blocks []contentBlock
 		if err := json.Unmarshal(rec.Message.ContentRaw, &blocks); err != nil {
 			continue
 		}
-		ts := parseTimestamp(rec.Timestamp)
 		for _, block := range blocks {
 			if block.Type == "tool_use" && block.Name != "" {
 				events = append(events, agent.Event{
@@ -251,11 +265,26 @@ func tailJSONL(target TailTarget, parentID string, out chan<- agent.Event) {
 			continue
 		}
 		model := agent.ParseModel(rec.Message.Model)
+		ts := parseTimestamp(rec.Timestamp)
+
+		// Emit a TokenUsage event for every assistant message that carries usage.
+		if !rec.Message.Usage.IsZero() {
+			select {
+			case out <- agent.Event{
+				Type:      "TokenUsage",
+				SessionID: target.AgentID,
+				ParentID:  parentID,
+				Usage:     rec.Message.Usage,
+				Timestamp: ts,
+			}:
+			default:
+			}
+		}
+
 		var blocks []contentBlock
 		if jsonErr := json.Unmarshal(rec.Message.ContentRaw, &blocks); jsonErr != nil {
 			continue
 		}
-		ts := parseTimestamp(rec.Timestamp)
 		for _, block := range blocks {
 			if block.Type == "tool_use" && block.Name != "" {
 				select {

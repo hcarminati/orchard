@@ -6,6 +6,117 @@ import (
 	"testing"
 )
 
+// --- LoadConfig ---
+
+func TestLoadConfig_MissingFile_ReturnsZero(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Budget != 0 {
+		t.Errorf("expected zero budget for missing file, got %v", cfg.Budget)
+	}
+}
+
+func TestLoadConfig_ParsesBudget(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	cfgDir := filepath.Join(dir, ".config", "orchard")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte("budget = 300\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Budget != 300 {
+		t.Errorf("expected budget=300, got %v", cfg.Budget)
+	}
+}
+
+func TestLoadConfig_IgnoresComments(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	cfgDir := filepath.Join(dir, ".config", "orchard")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "# monthly cap\nbudget = 500\n"
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Budget != 500 {
+		t.Errorf("expected budget=500, got %v", cfg.Budget)
+	}
+}
+
+func TestLoadConfig_InvalidBudget_IgnoredNotError(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	cfgDir := filepath.Join(dir, ".config", "orchard")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte("budget = notanumber\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Budget != 0 {
+		t.Errorf("expected zero budget for invalid value, got %v", cfg.Budget)
+	}
+}
+
+func TestLoadConfig_ParsesMaxTokens(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	cfgDir := filepath.Join(dir, ".config", "orchard")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "budget = 300\nmax_tokens = 5000000\n"
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.MaxTokens != 5_000_000 {
+		t.Errorf("expected max_tokens=5000000, got %v", cfg.MaxTokens)
+	}
+}
+
+func TestLoadConfig_InvalidMaxTokens_IgnoredNotError(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	cfgDir := filepath.Join(dir, ".config", "orchard")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte("max_tokens = notanumber\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.MaxTokens != 0 {
+		t.Errorf("expected zero max_tokens for invalid value, got %v", cfg.MaxTokens)
+	}
+}
+
 func TestLoadHidden_SaveHidden_RoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)

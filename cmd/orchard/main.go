@@ -96,6 +96,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "warning: could not load session state: %v\n", err)
 	}
 
+	// Load user config from ~/.config/orchard/config.toml.
+	// Errors are non-fatal; missing file is the common case and returns zero Config.
+	orchardCfg, err := config.LoadConfig()
+	if err != nil {
+		fmt.Fprintf(stderr, "warning: could not load config: %v\n", err)
+	}
+
 	// Compute the subagents root directory so the TUI can scan for new subagent
 	// JSONL files when a PreToolUse[Agent] event arrives.
 	// Path: ~/.claude/projects/{cwdDir}/ where cwdDir is cwd with "/" → "-".
@@ -131,7 +138,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	// Think of the program as the event loop — it handles keyboard input,
 	// window resize events, and calls our model's Update/View functions.
 	p := tea.NewProgram(
-		ui.New(initialNodes, eventCh, subagentsRoot, hiddenIDs, expandedIDs), // model seeded with session data + live event channel
+		ui.New(initialNodes, eventCh, subagentsRoot, hiddenIDs, expandedIDs, orchardCfg.Budget, orchardCfg.MaxTokens), // model seeded with session data + live event channel
 		tea.WithAltScreen(),           // use the terminal's alternate screen buffer so we
 		// don't mess up the user's scrollback history
 		tea.WithMouseCellMotion(), // enable mouse click support for node focus

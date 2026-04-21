@@ -17,13 +17,14 @@ import (
 	"github.com/hcarminati/orchard/internal/agent"
 )
 
-// rawMessage holds just the fields we inspect: the role, model, and raw content bytes.
-// Content is kept as json.RawMessage because it can be either a string or an
-// array of content blocks, depending on the message type.
+// rawMessage holds just the fields we inspect: the role, model, raw content bytes,
+// and token usage. Content is kept as json.RawMessage because it can be either a
+// string or an array of content blocks, depending on the message type.
 type rawMessage struct {
 	Role       string          `json:"role"`
 	Model      string          `json:"model"`
 	ContentRaw json.RawMessage `json:"content"`
+	Usage      agent.Usage     `json:"usage"`
 }
 
 // subagentMeta is the content of agent-{agentId}.meta.json files written by
@@ -231,7 +232,7 @@ func parseNodes(path string) ([]agent.Node, error) {
 			nodeMap[rec.SessionID].ParentID = rec.ParentUUID
 		}
 
-		// Only assistant messages carry tool_use blocks and model info.
+		// Only assistant messages carry tool_use blocks, model info, and token usage.
 		if rec.Message.Role != "assistant" {
 			continue
 		}
@@ -242,6 +243,9 @@ func parseNodes(path string) ([]agent.Node, error) {
 		if node.Model == agent.ModelUnknown && rec.Message.Model != "" {
 			node.Model = agent.ParseModel(rec.Message.Model)
 		}
+
+		// Accumulate token usage from every assistant message.
+		node.Usage.Add(rec.Message.Usage)
 
 		// content can be a string (simple text reply) or an array of blocks.
 		// Ignore string content — it carries no tool calls.
@@ -321,7 +325,7 @@ func loadSubagentNodes(subagentsDir, parentID string) ([]agent.Node, error) {
 
 		// Parse the companion JSONL for tool-use events and spawn timestamp.
 		jsonlPath := filepath.Join(subagentsDir, "agent-"+agentID+".jsonl")
-		events, model := parseSubagentEvents(jsonlPath, agentID)
+		events, model, usage := parseSubagentEvents(jsonlPath, agentID)
 		spawnedAt := firstJSONLTimestamp(jsonlPath)
 
 		displayName := meta.Description
@@ -344,6 +348,7 @@ func loadSubagentNodes(subagentsDir, parentID string) ([]agent.Node, error) {
 			Tools:     []string{},
 			Skills:    []string{},
 			Events:    events,
+			Usage:     usage,
 		})
 	}
 	return nodes, nil
@@ -376,10 +381,10 @@ func firstJSONLTimestamp(path string) time.Time {
 // parent sessions. agentID is used as the SessionID on each returned event so
 // they are associated with the subagent's own node. The model is extracted from
 // the first assistant message that declares it.
-func parseSubagentEvents(path, agentID string) ([]agent.Event, agent.Model) {
+func parseSubagentEvents(path, agentID string) ([]agent.Event, agent.Model, agent.Usage) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, agent.ModelUnknown
+		return nil, agent.ModelUnknown, agent.Usage{}
 	}
 	defer f.Close()
 
@@ -388,6 +393,7 @@ func parseSubagentEvents(path, agentID string) ([]agent.Event, agent.Model) {
 
 	var events []agent.Event
 	model := agent.ModelUnknown
+	var usage agent.Usage
 	for scanner.Scan() {
 		var rec subagentRecord
 		if err := json.Unmarshal(scanner.Bytes(), &rec); err != nil {
@@ -399,6 +405,7 @@ func parseSubagentEvents(path, agentID string) ([]agent.Event, agent.Model) {
 		if model == agent.ModelUnknown && rec.Message.Model != "" {
 			model = agent.ParseModel(rec.Message.Model)
 		}
+		usage.Add(rec.Message.Usage)
 		var blocks []contentBlock
 		if err := json.Unmarshal(rec.Message.ContentRaw, &blocks); err != nil {
 			continue
@@ -416,5 +423,5 @@ func parseSubagentEvents(path, agentID string) ([]agent.Event, agent.Model) {
 			}
 		}
 	}
-	return events, model
+	return events, model, usage
 }

@@ -376,14 +376,11 @@ func TestPermissionPreview_Bash_ExtractsCommand(t *testing.T) {
 	}
 }
 
-func TestPermissionPreview_Bash_TruncatesLongCommand(t *testing.T) {
+func TestPermissionPreview_Bash_ReturnsFullCommand(t *testing.T) {
 	cmd := strings.Repeat("x", 50)
 	got := permissionPreview("Bash", `{"command":"`+cmd+`"}`, "")
-	if len([]rune(got)) > 41 { // 40 + "…"
-		t.Errorf("expected command truncated at 40 runes, got %q (len %d)", got, len([]rune(got)))
-	}
-	if !strings.HasPrefix(got, strings.Repeat("x", 40)) {
-		t.Errorf("expected first 40 x's preserved, got %q", got)
+	if got != cmd {
+		t.Errorf("expected full command returned, got %q", got)
 	}
 }
 
@@ -429,6 +426,526 @@ func TestPermissionPreview_MissingField_FallsBackToRaw(t *testing.T) {
 	if !strings.Contains(got, "description") {
 		t.Errorf("expected raw input fallback when command field missing, got %q", got)
 	}
+}
+
+// --- Cost helpers ---
+
+func TestFormatCost_Zero(t *testing.T) {
+	if got := formatCost(0); got != "" {
+		t.Errorf("expected empty string for zero cost, got %q", got)
+	}
+}
+
+func TestFormatCost_NonZero(t *testing.T) {
+	got := formatCost(3.14159)
+	if got != "$3.14" {
+		t.Errorf("expected '$3.14', got %q", got)
+	}
+}
+
+func TestFormatCost_TwoDecimalPlaces(t *testing.T) {
+	got := formatCost(0.5)
+	if got != "$0.50" {
+		t.Errorf("expected '$0.50', got %q", got)
+	}
+}
+
+func TestFormatCost_AboveThreshold_NoDecimals(t *testing.T) {
+	cases := []struct {
+		in   float64
+		want string
+	}{
+		{10.0, "$10"},
+		{167.23, "$167"},
+		{1000.99, "$1000"},
+	}
+	for _, tc := range cases {
+		got := formatCost(tc.in)
+		if got != tc.want {
+			t.Errorf("formatCost(%v) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestFormatCost_NoScientificNotation(t *testing.T) {
+	got := formatCost(0.000001)
+	if strings.Contains(got, "e") || strings.Contains(got, "E") {
+		t.Errorf("cost should not use scientific notation, got %q", got)
+	}
+}
+
+// --- Token count formatting ---
+
+func TestFormatTokenCount_Small(t *testing.T) {
+	if got := formatTokenCount(891); got != "891" {
+		t.Errorf("expected '891', got %q", got)
+	}
+}
+
+func TestFormatTokenCount_Thousands(t *testing.T) {
+	if got := formatTokenCount(2300); got != "2.3k" {
+		t.Errorf("expected '2.3k', got %q", got)
+	}
+}
+
+func TestFormatTokenCount_ExactThousand(t *testing.T) {
+	if got := formatTokenCount(1000); got != "1k" {
+		t.Errorf("expected '1k', got %q", got)
+	}
+}
+
+func TestFormatTokenCount_Millions(t *testing.T) {
+	if got := formatTokenCount(1_200_000); got != "1.2M" {
+		t.Errorf("expected '1.2M', got %q", got)
+	}
+}
+
+func TestFormatTokenCount_ExactMillion(t *testing.T) {
+	if got := formatTokenCount(1_000_000); got != "1M" {
+		t.Errorf("expected '1M', got %q", got)
+	}
+}
+
+func TestEstimateCost_Sonnet(t *testing.T) {
+	u := agent.Usage{InputTokens: 1_000_000, OutputTokens: 0}
+	cost := estimateCost(u, agent.ModelSonnet)
+	if cost != 3.00 {
+		t.Errorf("expected $3.00 for 1M input tokens on sonnet, got %f", cost)
+	}
+}
+
+func TestEstimateCost_Haiku(t *testing.T) {
+	u := agent.Usage{InputTokens: 0, OutputTokens: 1_000_000}
+	cost := estimateCost(u, agent.ModelHaiku)
+	if cost != 4.00 {
+		t.Errorf("expected $4.00 for 1M output tokens on haiku, got %f", cost)
+	}
+}
+
+func TestEstimateCost_UnknownModel_ReturnsZero(t *testing.T) {
+	u := agent.Usage{InputTokens: 1000, OutputTokens: 500}
+	cost := estimateCost(u, agent.ModelUnknown)
+	if cost != 0 {
+		t.Errorf("expected $0 for unknown model, got %f", cost)
+	}
+}
+
+func TestEstimateCost_ZeroUsage_ReturnsZero(t *testing.T) {
+	cost := estimateCost(agent.Usage{}, agent.ModelSonnet)
+	if cost != 0 {
+		t.Errorf("expected $0 for zero usage, got %f", cost)
+	}
+}
+
+func TestEstimateCost_CacheTokens(t *testing.T) {
+	// 1M cache-read tokens on sonnet = $0.30
+	u := agent.Usage{CacheReadInputTokens: 1_000_000}
+	cost := estimateCost(u, agent.ModelSonnet)
+	if cost != 0.30 {
+		t.Errorf("expected $0.30 for 1M cache-read tokens on sonnet, got %f", cost)
+	}
+}
+
+// --- Model in events panel ---
+
+func TestTabStripTitle_ShowsModelWhenFocused(t *testing.T) {
+	n := agent.Node{ID: "a", Name: "session:a", Status: agent.StatusRunning, Model: agent.ModelSonnet}
+	m := newWithClock([]agent.Node{n}, nil, nil, time.Time{})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+
+	title := next.(Model).tabStripTitle(colorAccent)
+	stripped := stripANSI(title)
+	if !strings.Contains(stripped, "sonnet") {
+		t.Errorf("expected model 'sonnet' in tab strip title, got %q", stripped)
+	}
+}
+
+func TestTabStripTitle_NoModelWhenUnknown(t *testing.T) {
+	n := agent.Node{ID: "a", Name: "session:a", Status: agent.StatusRunning, Model: agent.ModelUnknown}
+	m := newWithClock([]agent.Node{n}, nil, nil, time.Time{})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+
+	title := next.(Model).tabStripTitle(colorAccent)
+	stripped := stripANSI(title)
+	if strings.Contains(stripped, "·") {
+		t.Errorf("expected no model badge when model is unknown, got %q", stripped)
+	}
+}
+
+func TestTabStripTitle_NoModelWhenNoFocus(t *testing.T) {
+	m := newWithClock(nil, nil, nil, time.Time{})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+
+	title := next.(Model).tabStripTitle(colorAccent)
+	stripped := stripANSI(title)
+	if strings.Contains(stripped, "·") {
+		t.Errorf("expected no model badge when no node is focused, got %q", stripped)
+	}
+}
+
+func TestEventsHeader_RootNode_ShowsStatus(t *testing.T) {
+	n := agent.Node{ID: "abc123", Name: "session:abc123", Status: agent.StatusRunning, Model: agent.ModelSonnet}
+	m := newWithClock([]agent.Node{n}, nil, nil, time.Time{})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	content := next.(Model).eventsContent()
+	stripped := stripANSI(content)
+
+	if !strings.Contains(stripped, "running") {
+		t.Errorf("expected status 'running' in root node events header, got:\n%s", stripped)
+	}
+}
+
+func TestEventsHeader_RootNode_ShowsSubagentCount(t *testing.T) {
+	parent := agent.Node{ID: "parent-id", Name: "session:parent-i", Status: agent.StatusRunning, Model: agent.ModelSonnet}
+	child1 := agent.Node{ID: "child1", ParentID: "parent-id", Name: "Explore", Status: agent.StatusDone}
+	child2 := agent.Node{ID: "child2", ParentID: "parent-id", Name: "Plan", Status: agent.StatusDone}
+	m := newWithClock([]agent.Node{parent, child1, child2}, nil, nil, time.Time{})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	content := next.(Model).eventsContent()
+	stripped := stripANSI(content)
+
+	if !strings.Contains(stripped, "2 subagents") {
+		t.Errorf("expected '2 subagents' in root node events header, got:\n%s", stripped)
+	}
+}
+
+func TestEventsHeader_SpawnLine_ShowsSpawnedBy(t *testing.T) {
+	// Model is now in the tab strip, not the spawn header.
+	parent := agent.Node{ID: "parent-abc123", Name: "session:parent-a", Status: agent.StatusDone}
+	child := agent.Node{
+		ID:       "child-xyz",
+		ParentID: "parent-abc123",
+		Name:     "Explore",
+		Status:   agent.StatusDone,
+		Model:    agent.ModelHaiku,
+	}
+	m := newWithClock([]agent.Node{parent, child}, nil, nil, time.Time{})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	content := next.(Model).eventsContent()
+	stripped := stripANSI(content)
+
+	if !strings.Contains(stripped, "Spawned by") {
+		t.Errorf("expected 'Spawned by' in spawn context header, got:\n%s", stripped)
+	}
+	// Model appears in tab strip, not in events content.
+	if strings.Contains(stripped, "haiku") {
+		t.Errorf("expected model NOT in events content (moved to tab strip), got:\n%s", stripped)
+	}
+}
+
+func TestStatusLabel(t *testing.T) {
+	cases := []struct {
+		status agent.Status
+		want   string
+	}{
+		{agent.StatusRunning, "running"},
+		{agent.StatusIdle, "idle"},
+		{agent.StatusDone, "done"},
+		{agent.StatusError, "error"},
+	}
+	for _, tc := range cases {
+		if got := statusLabel(tc.status); got != tc.want {
+			t.Errorf("statusLabel(%v) = %q, want %q", tc.status, got, tc.want)
+		}
+	}
+}
+
+func TestEventsHeader_NoCostInEventsContent(t *testing.T) {
+	// Cost has moved to the tab strip and agents panel — events content should
+	// never contain a "$" sign regardless of usage.
+	n := agent.Node{
+		ID:     "abc123",
+		Name:   "session:abc123",
+		Status: agent.StatusRunning,
+		Model:  agent.ModelSonnet,
+		Usage:  agent.Usage{InputTokens: 1_000_000},
+	}
+	m := newWithClock([]agent.Node{n}, nil, nil, time.Time{})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 160, Height: 40})
+	content := next.(Model).eventsContent()
+	stripped := stripANSI(content)
+
+	if strings.Contains(stripped, "$") {
+		t.Errorf("expected no cost in events content (cost moved to tab strip), got:\n%s", stripped)
+	}
+}
+
+func TestTabStripTitle_ShowsTokenCount(t *testing.T) {
+	n := agent.Node{
+		ID:    "a",
+		Name:  "session:a",
+		Model: agent.ModelSonnet,
+		Usage: agent.Usage{InputTokens: 2300, OutputTokens: 891},
+	}
+	m := newWithClock([]agent.Node{n}, nil, nil, time.Time{})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	title := next.(Model).tabStripTitle(colorAccent)
+	stripped := stripANSI(title)
+
+	if !strings.Contains(stripped, "↑2.3k") {
+		t.Errorf("expected '↑2.3k' in tab strip title, got %q", stripped)
+	}
+	if !strings.Contains(stripped, "↓891") {
+		t.Errorf("expected '↓891' in tab strip title, got %q", stripped)
+	}
+}
+
+func TestTabStripTitle_ShowsCostWhenUsagePresent(t *testing.T) {
+	n := agent.Node{
+		ID:    "a",
+		Name:  "session:a",
+		Model: agent.ModelSonnet,
+		Usage: agent.Usage{InputTokens: 1_000_000},
+	}
+	m := newWithClock([]agent.Node{n}, nil, nil, time.Time{})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	title := next.(Model).tabStripTitle(colorAccent)
+	stripped := stripANSI(title)
+
+	if !strings.Contains(stripped, "$") {
+		t.Errorf("expected cost in tab strip title when usage is non-zero, got %q", stripped)
+	}
+}
+
+func TestTabStripTitle_NoCostWhenZeroUsage(t *testing.T) {
+	n := agent.Node{
+		ID:    "a",
+		Name:  "session:a",
+		Model: agent.ModelSonnet,
+		// no usage
+	}
+	m := newWithClock([]agent.Node{n}, nil, nil, time.Time{})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	title := next.(Model).tabStripTitle(colorAccent)
+	stripped := stripANSI(title)
+
+	if strings.Contains(stripped, "$") {
+		t.Errorf("expected no cost in tab strip title when usage is zero, got %q", stripped)
+	}
+}
+
+func TestAgentsPanel_ShowsTotalCost(t *testing.T) {
+	n1 := agent.Node{ID: "a", Name: "session:a", Status: agent.StatusRunning, Model: agent.ModelSonnet, Usage: agent.Usage{InputTokens: 1_000_000}}
+	n2 := agent.Node{ID: "b", Name: "session:b", Status: agent.StatusRunning, Model: agent.ModelHaiku, Usage: agent.Usage{OutputTokens: 1_000_000}}
+	m := newWithClock([]agent.Node{n1, n2}, nil, nil, time.Time{})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 160, Height: 40})
+	stripped := stripANSI(next.(Model).View())
+
+	// $3.00 (sonnet input) + $4.00 (haiku output) = $7.00
+	if !strings.Contains(stripped, "$7.00") {
+		t.Errorf("expected '$7.00' in agents panel title, got:\n%s", stripped)
+	}
+	if strings.Contains(stripped, "lifetime:") {
+		t.Errorf("expected no lifetime label, got:\n%s", stripped)
+	}
+}
+
+func TestAgentsPanel_TotalCostIncludesHistoricalSessions(t *testing.T) {
+	// Historical (done) + live session — total cost should sum both, no lifetime label.
+	historical := agent.Node{
+		ID:     "old",
+		Name:   "hist-agent",
+		Status: agent.StatusDone,
+		Model:  agent.ModelSonnet,
+		Usage:  agent.Usage{InputTokens: 1_000_000}, // $3.00
+	}
+	live := agent.Node{
+		ID:     "cur",
+		Name:   "live-agent",
+		Status: agent.StatusRunning,
+		Model:  agent.ModelHaiku,
+		Usage:  agent.Usage{OutputTokens: 1_000_000}, // $4.00
+	}
+	m := newWithClock([]agent.Node{historical, live}, nil, nil, time.Time{})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 200, Height: 40})
+	stripped := stripANSI(next.(Model).View())
+
+	if !strings.Contains(stripped, "$7.00") {
+		t.Errorf("expected '$7.00' (sum of all sessions) in title, got:\n%s", stripped)
+	}
+	if strings.Contains(stripped, "lifetime:") {
+		t.Errorf("expected no lifetime label, got:\n%s", stripped)
+	}
+}
+
+func TestAgentsPanel_NoCostWhenZeroUsage(t *testing.T) {
+	n := agent.Node{ID: "a", Name: "session:a", Model: agent.ModelSonnet}
+	m := newWithClock([]agent.Node{n}, nil, nil, time.Time{})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 160, Height: 40})
+
+	// agentsContent is the tree body — it never contains cost (cost is in the title).
+	content := next.(Model).agentsContent()
+	stripped := stripANSI(content)
+
+	if strings.Contains(stripped, "$") {
+		t.Errorf("expected no cost in agents panel content when usage is zero, got:\n%s", stripped)
+	}
+}
+
+func TestAgentsPanel_BudgetDisplay_NoBudget_ShowsOnlyCost(t *testing.T) {
+	// No budget configured — cost display shows "$X" with no denominator.
+	n := agent.Node{ID: "a", Name: "session:a", Status: agent.StatusRunning, Model: agent.ModelSonnet, Usage: agent.Usage{InputTokens: 1_000_000}}
+	m := newWithClock([]agent.Node{n}, nil, nil, time.Time{})
+	// budget is zero (default)
+	rendered := m.renderCostWithBudget(3.00, colorMuted)
+	stripped := stripANSI(rendered)
+
+	if stripped != "$3.00" {
+		t.Errorf("expected '$3.00' with no denominator, got: %q", stripped)
+	}
+}
+
+func TestAgentsPanel_BudgetDisplay_UnderThreshold_ShowsFraction(t *testing.T) {
+	// Budget set to $300; cost is $3 — under 80%, shown with denominator.
+	n := agent.Node{ID: "a", Name: "session:a", Status: agent.StatusRunning, Model: agent.ModelSonnet, Usage: agent.Usage{InputTokens: 1_000_000}}
+	m := newWithClock([]agent.Node{n}, nil, nil, time.Time{})
+	m.budget = 300
+
+	rendered := m.renderCostWithBudget(3.00, colorMuted)
+	stripped := stripANSI(rendered)
+	if stripped != "$3.00/$300" {
+		t.Errorf("expected '$3.00/$300', got: %q", stripped)
+	}
+}
+
+func TestBudgetCostColor_BelowThreshold(t *testing.T) {
+	// Under 80% — should use the border color unchanged.
+	got := budgetCostColor(0.50, colorMuted)
+	if got != colorMuted {
+		t.Errorf("expected borderColor below 80%%, got %v", got)
+	}
+}
+
+func TestBudgetCostColor_AmberThreshold(t *testing.T) {
+	// Exactly 80% — amber.
+	got := budgetCostColor(0.80, colorMuted)
+	if got != colorYellow {
+		t.Errorf("expected amber (colorYellow) at 80%%, got %v", got)
+	}
+}
+
+func TestBudgetCostColor_RedThreshold(t *testing.T) {
+	// Exactly 100% — red.
+	got := budgetCostColor(1.00, colorMuted)
+	if got != colorRed {
+		t.Errorf("expected red (colorRed) at 100%%, got %v", got)
+	}
+}
+
+func TestBudgetCostColor_OverBudget(t *testing.T) {
+	// Over 100% — still red.
+	got := budgetCostColor(1.50, colorMuted)
+	if got != colorRed {
+		t.Errorf("expected red (colorRed) over budget, got %v", got)
+	}
+}
+
+func TestAgentsPanel_BudgetDisplay_AmberThreshold(t *testing.T) {
+	// Cost is exactly 80% of budget — text fraction should appear correctly.
+	m := newWithClock(nil, nil, nil, time.Time{})
+	m.budget = 3.75 // $3.00 / $3.75 = 80%
+
+	stripped := stripANSI(m.renderCostWithBudget(3.00, colorMuted))
+	if stripped != "$3.00/$3.75" {
+		t.Errorf("expected '$3.00/$3.75', got: %q", stripped)
+	}
+}
+
+func TestAgentsPanel_BudgetDisplay_RedThreshold(t *testing.T) {
+	// Cost exceeds 100% of budget — text fraction should appear correctly.
+	m := newWithClock(nil, nil, nil, time.Time{})
+	m.budget = 2.00 // $3.00 exceeds $2.00 budget
+
+	stripped := stripANSI(m.renderCostWithBudget(3.00, colorMuted))
+	if stripped != "$3.00/$2.00" {
+		t.Errorf("expected '$3.00/$2.00', got: %q", stripped)
+	}
+}
+
+func TestAgentsPanel_TokenDisplay_NoMax(t *testing.T) {
+	// No max_tokens configured — shows raw token count with no denominator.
+	m := newWithClock(nil, nil, nil, time.Time{})
+	// maxTokens is zero by default
+	stripped := stripANSI(m.renderTokensWithMax(1_500_000, colorMuted))
+	if stripped != "1.5M" {
+		t.Errorf("expected '1.5M', got: %q", stripped)
+	}
+}
+
+func TestAgentsPanel_TokenDisplay_WithMax(t *testing.T) {
+	// max_tokens configured — shows "used/max".
+	m := newWithClock(nil, nil, nil, time.Time{})
+	m.maxTokens = 5_000_000
+
+	stripped := stripANSI(m.renderTokensWithMax(1_500_000, colorMuted))
+	if stripped != "1.5M/5M" {
+		t.Errorf("expected '1.5M/5M', got: %q", stripped)
+	}
+}
+
+func TestAgentsPanel_TokenDisplay_ColorThresholds(t *testing.T) {
+	// Token color uses the same budgetCostColor logic as cost — re-verify at token scale.
+	if got := budgetCostColor(0.79, colorMuted); got != colorMuted {
+		t.Errorf("expected borderColor below 80%%, got %v", got)
+	}
+	if got := budgetCostColor(0.80, colorMuted); got != colorYellow {
+		t.Errorf("expected amber at 80%%, got %v", got)
+	}
+	if got := budgetCostColor(1.00, colorMuted); got != colorRed {
+		t.Errorf("expected red at 100%%, got %v", got)
+	}
+}
+
+func TestAgentsPanel_ShowsTokensInHeader(t *testing.T) {
+	// Token count should appear in the Agents panel title when there is usage.
+	n := agent.Node{
+		ID:     "a",
+		Name:   "session:a",
+		Status: agent.StatusRunning,
+		Model:  agent.ModelSonnet,
+		Usage:  agent.Usage{InputTokens: 1_000_000, OutputTokens: 500_000},
+	}
+	m := newWithClock([]agent.Node{n}, nil, nil, time.Time{})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 160, Height: 40})
+	stripped := stripANSI(next.(Model).View())
+
+	// 1M input + 500k output = 1.5M total
+	if !strings.Contains(stripped, "1.5M") {
+		t.Errorf("expected '1.5M' token count in title, got:\n%s", stripped)
+	}
+}
+
+func TestView_TreeNodes_NoModelBadge(t *testing.T) {
+	n := agent.Node{ID: "a", Name: "myagent", Status: agent.StatusRunning, Model: agent.ModelSonnet}
+	m := newWithClock([]agent.Node{n}, nil, nil, time.Time{})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	content := next.(Model).agentsContent()
+	stripped := stripANSI(content)
+
+	// Model name must not appear in the agents panel tree.
+	if strings.Contains(stripped, "sonnet") {
+		t.Errorf("expected no model badge in agents tree, got:\n%s", stripped)
+	}
+}
+
+// stripANSI removes ANSI escape codes from a string for plain-text assertions.
+func stripANSI(s string) string {
+	var out strings.Builder
+	i := 0
+	for i < len(s) {
+		if s[i] == '\x1b' && i+1 < len(s) && s[i+1] == '[' {
+			i += 2
+			for i < len(s) && s[i] != 'm' {
+				i++
+			}
+			i++ // skip 'm'
+			continue
+		}
+		out.WriteByte(s[i])
+		i++
+	}
+	return out.String()
 }
 
 // --- Footer hints ---

@@ -51,6 +51,165 @@ func toolColor(tool string) lipgloss.Color {
 	}
 }
 
+// tokenCost holds per-million-token USD prices for one model.
+type tokenCost struct {
+	inputPer1M      float64
+	outputPer1M     float64
+	cacheWritePer1M float64
+	cacheReadPer1M  float64
+}
+
+// modelCosts maps known model variants to their published Claude API pricing.
+var modelCosts = map[agent.Model]tokenCost{
+	agent.ModelHaiku:  {inputPer1M: 0.80, outputPer1M: 4.00, cacheWritePer1M: 1.00, cacheReadPer1M: 0.08},
+	agent.ModelSonnet: {inputPer1M: 3.00, outputPer1M: 15.00, cacheWritePer1M: 3.75, cacheReadPer1M: 0.30},
+	agent.ModelOpus:   {inputPer1M: 15.00, outputPer1M: 75.00, cacheWritePer1M: 18.75, cacheReadPer1M: 1.50},
+}
+
+// estimateCost returns the estimated USD cost for u at the given model's pricing.
+// Returns 0 when the model has no known pricing or usage is zero.
+func estimateCost(u agent.Usage, m agent.Model) float64 {
+	p, ok := modelCosts[m]
+	if !ok || u.IsZero() {
+		return 0
+	}
+	return (float64(u.InputTokens)*p.inputPer1M +
+		float64(u.OutputTokens)*p.outputPer1M +
+		float64(u.CacheCreationInputTokens)*p.cacheWritePer1M +
+		float64(u.CacheReadInputTokens)*p.cacheReadPer1M) / 1_000_000
+}
+
+// formatCost formats a USD cost for compact display.
+// Returns empty string for zero cost.
+// ≥ $10: integer ("$167"); < $1 or $1–$9.99: two decimal places ("$0.50", "$3.14").
+func formatCost(cost float64) string {
+	if cost == 0 {
+		return ""
+	}
+	if cost >= 10 {
+		return fmt.Sprintf("$%d", int(cost))
+	}
+	return fmt.Sprintf("$%.2f", cost)
+}
+
+// formatTokenCount formats an integer token count for compact display:
+// values below 1000 are shown as-is; thousands are shown as "2.3k"; millions as "1.2M".
+func formatTokenCount(n int) string {
+	if n >= 1_000_000 {
+		s := strings.TrimRight(fmt.Sprintf("%.1f", float64(n)/1_000_000), "0")
+		return strings.TrimRight(s, ".") + "M"
+	}
+	if n >= 1000 {
+		s := strings.TrimRight(fmt.Sprintf("%.1f", float64(n)/1000), "0")
+		return strings.TrimRight(s, ".") + "k"
+	}
+	return fmt.Sprintf("%d", n)
+}
+
+// subtreeCost returns the total estimated cost for nodeID and all its descendants.
+// Each node's cost is computed using its own model so mixed-model subtrees are
+// priced correctly.
+func (m Model) subtreeCost(nodeID string) float64 {
+	n := m.agents.Nodes[nodeID]
+	if n == nil {
+		return 0
+	}
+	cost := estimateCost(n.Usage, n.Model)
+	for _, childID := range n.Children {
+		cost += m.subtreeCost(childID)
+	}
+	return cost
+}
+
+// totalCost returns the total estimated cost across all sessions.
+func (m Model) totalCost() float64 {
+	var total float64
+	for _, rootID := range m.agents.Roots {
+		total += m.subtreeCost(rootID)
+	}
+	return total
+}
+
+// subtreeTokens returns the total token count for nodeID and all its descendants.
+func (m Model) subtreeTokens(nodeID string) int {
+	n := m.agents.Nodes[nodeID]
+	if n == nil {
+		return 0
+	}
+	u := n.Usage
+	total := u.InputTokens + u.OutputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens
+	for _, childID := range n.Children {
+		total += m.subtreeTokens(childID)
+	}
+	return total
+}
+
+// totalTokens returns the total token count across all sessions.
+func (m Model) totalTokens() int {
+	var total int
+	for _, rootID := range m.agents.Roots {
+		total += m.subtreeTokens(rootID)
+	}
+	return total
+}
+
+// renderTokensWithMax formats totalTok for display in the Agents title.
+// With no max: "1.2M" in the standard border color.
+// With max: "1.2M/5M" — amber when ≥80% of max, red when ≥100%.
+func (m Model) renderTokensWithMax(totalTok int, borderColor lipgloss.Color) string {
+	tokStr := formatTokenCount(totalTok)
+	if m.maxTokens <= 0 {
+		return lipgloss.NewStyle().Foreground(borderColor).Render(tokStr)
+	}
+	ratio := float64(totalTok) / float64(m.maxTokens)
+	tokColor := budgetCostColor(ratio, borderColor)
+	maxStr := formatTokenCount(m.maxTokens)
+	return lipgloss.NewStyle().Foreground(tokColor).Render(tokStr + "/" + maxStr)
+}
+
+// budgetCostColor returns the color for cost display given the spend ratio and
+// the panel's border color. Exported-by-name only within the package for tests.
+func budgetCostColor(ratio float64, borderColor lipgloss.Color) lipgloss.Color {
+	switch {
+	case ratio >= 1.0:
+		return colorRed
+	case ratio >= 0.8:
+		return colorYellow
+	default:
+		return borderColor
+	}
+}
+
+// renderCostWithBudget formats totalCost for display in the Agents title.
+// With no budget: "$167" in the standard border color.
+// With budget: "$167/$300" — amber when ≥80% of budget, red when ≥100%.
+func (m Model) renderCostWithBudget(totalCost float64, borderColor lipgloss.Color) string {
+	costStr := formatCost(totalCost)
+	if m.budget <= 0 {
+		return lipgloss.NewStyle().Foreground(borderColor).Render(costStr)
+	}
+	ratio := totalCost / m.budget
+	costColor := budgetCostColor(ratio, borderColor)
+	budgetStr := formatCost(m.budget)
+	return lipgloss.NewStyle().Foreground(costColor).Render(costStr + "/" + budgetStr)
+}
+
+// statusLabel returns a short lowercase string for a node status, used in the events header.
+func statusLabel(s agent.Status) string {
+	switch s {
+	case agent.StatusRunning:
+		return "running"
+	case agent.StatusIdle:
+		return "idle"
+	case agent.StatusDone:
+		return "done"
+	case agent.StatusError:
+		return "error"
+	default:
+		return ""
+	}
+}
+
 // renderFooter builds the bottom keybindings bar.
 func (m Model) renderFooter() string {
 	bind := func(key, desc string) string {
@@ -122,8 +281,18 @@ func (m Model) renderFooter() string {
 }
 
 // renderBody builds the two-panel layout.
+// agentsPanelW returns the width of the left (Agents) panel.
+// The panel takes ~40% of the terminal width, bounded between a minimum of 32
+// and a ceiling that ensures the events panel always gets at least 50 columns.
+func (m Model) agentsPanelW() int {
+	const agentsMin = 32
+	const eventsMin = 50
+	w := m.width * 40 / 100
+	return max(agentsMin, min(w, m.width-eventsMin))
+}
+
 func (m Model) renderBody(height int) string {
-	leftW := m.width * 35 / 100
+	leftW := m.agentsPanelW()
 	rightW := m.width - leftW
 
 	// Title color matches border color (active = accent, inactive = muted).
@@ -140,6 +309,13 @@ func (m Model) renderBody(height int) string {
 	}
 	agentCount := lipgloss.NewStyle().Foreground(leftBorderColor).Render(fmt.Sprintf(" · %d", visibleCount))
 	agentsTitle := lipgloss.NewStyle().Bold(true).Foreground(leftBorderColor).Render("Agents") + agentCount
+	sep := lipgloss.NewStyle().Foreground(leftBorderColor).Render(" · ")
+	if totalCost := m.totalCost(); totalCost > 0 {
+		agentsTitle += sep + m.renderCostWithBudget(totalCost, leftBorderColor)
+	}
+	if totalTok := m.totalTokens(); totalTok > 0 {
+		agentsTitle += sep + m.renderTokensWithMax(totalTok, leftBorderColor)
+	}
 	left := m.renderPanel(agentsTitle, m.agentsContent(), leftW, height, leftActive)
 
 	rightActive := m.activePanel == panelEvents
@@ -154,6 +330,7 @@ func (m Model) renderBody(height int) string {
 
 // tabStripTitle returns the tab labels formatted for embedding in the top border.
 // The active tab is wrapped in brackets; inactive tabs are muted.
+// When the focused agent has a known model, it is appended as a muted badge.
 // borderColor is passed so the active label can match the panel border.
 func (m Model) tabStripTitle(borderColor lipgloss.Color) string {
 	activeStyle := lipgloss.NewStyle().Bold(true).Foreground(borderColor)
@@ -167,7 +344,22 @@ func (m Model) tabStripTitle(borderColor lipgloss.Color) string {
 			parts = append(parts, inactiveStyle.Render(t.label()))
 		}
 	}
-	return strings.Join(parts, " ")
+	title := strings.Join(parts, " ")
+
+	if node := m.focusedNode(); node != nil {
+		if node.Model != agent.ModelUnknown {
+			title += "  " + lipgloss.NewStyle().Foreground(colorMuted).Render("· "+string(node.Model))
+		}
+		if !node.Usage.IsZero() {
+			tokStr := "↑" + formatTokenCount(node.Usage.InputTokens) + " ↓" + formatTokenCount(node.Usage.OutputTokens)
+			title += "  " + lipgloss.NewStyle().Foreground(colorMuted).Render("· "+tokStr)
+			if cost := formatCost(estimateCost(node.Usage, node.Model)); cost != "" {
+				title += "  " + lipgloss.NewStyle().Foreground(colorMuted).Render("· "+cost)
+			}
+		}
+	}
+
+	return title
 }
 
 // rightTabContent returns the body content for the currently active right panel tab.
@@ -219,7 +411,13 @@ func (m Model) renderPanel(title, content string, width, height int, active bool
 
 	if title != "" {
 		// ╭─Title──╮: ╭(1) + ─(1) + title + ─…(n) + ╮(1) = width
+		// Truncate the title if it would overflow the panel width.
+		maxTitleW := max(0, width-3)
 		titleW := lipgloss.Width(title)
+		if titleW > maxTitleW {
+			title = lipgloss.NewStyle().MaxWidth(max(0, maxTitleW-1)).Render(title) + "…"
+			titleW = lipgloss.Width(title)
+		}
 		dashCount := max(0, width-3-titleW)
 		customTop := bs.Render("╭─") + title + bs.Render(strings.Repeat("─", dashCount)+"╮")
 		if nl := strings.Index(rendered, "\n"); nl != -1 {
@@ -245,43 +443,8 @@ func (m Model) agentsContent() string {
 	// innerW is the usable width of the agents panel content area.
 	// Each line must fit within this width to prevent wrapping, which would
 	// shift the Y coordinates of subsequent rows and break click-to-row mapping.
-	leftW := m.width * 35 / 100
-	innerW := max(1, leftW-2)
+	innerW := max(1, m.agentsPanelW()-2)
 
-	// Each agent row uses a fixed two-zone layout:
-	//   [name area — nameAreaW cols][2 spaces][badge — modelColW cols]
-	// The badge column is always reserved so it appears at a consistent right
-	// position. The name area is truncated (with "…") or space-padded to fill.
-	const modelColW = 6 // "sonnet" is the longest known model name
-	const modelSepW = 2 // spaces between name area and badge column
-	nameAreaW := max(1, innerW-modelSepW-modelColW)
-
-	// fitNameArea truncates or space-pads s to exactly w visible columns.
-	fitNameArea := func(s string, w int) string {
-		sw := lipgloss.Width(s)
-		if sw > w {
-			if w <= 1 {
-				return "…"
-			}
-			return lipgloss.NewStyle().MaxWidth(w-1).Render(s) + "…"
-		}
-		return s + strings.Repeat(" ", w-sw)
-	}
-
-	// badgeCol renders the model name in muted grey, padded to modelColW columns.
-	// When no model is set the column is blank, keeping the layout stable.
-	badgeCol := func(mod agent.Model) string {
-		raw := string(mod)
-		runes := []rune(raw)
-		if len(runes) > modelColW {
-			raw = string(runes[:modelColW])
-			runes = []rune(raw)
-		}
-		rendered := lipgloss.NewStyle().Foreground(colorMuted).Render(raw)
-		return rendered + strings.Repeat(" ", modelColW-len(runes))
-	}
-
-	// truncate is used for group header rows only, which don't carry a badge.
 	truncate := func(line string) string {
 		if lipgloss.Width(line) <= innerW {
 			return line
@@ -372,7 +535,7 @@ func (m Model) agentsContent() string {
 			if n.Status == agent.StatusError && n.ErrorMsg != "" {
 				nameContent += " " + lipgloss.NewStyle().Foreground(colorRed).Render("✗ "+n.ErrorMsg)
 			}
-			line := fitNameArea(nameContent, nameAreaW) + strings.Repeat(" ", modelSepW) + badgeCol(n.Model)
+			line := truncate(nameContent)
 			if hasWinner && !n.Winner {
 				line = lipgloss.NewStyle().Foreground(colorMuted).Render(line)
 			}
@@ -403,7 +566,7 @@ func (m Model) agentsContent() string {
 		if n.Status == agent.StatusError && n.ErrorMsg != "" {
 			nameContent += " " + lipgloss.NewStyle().Foreground(colorRed).Render("✗ "+n.ErrorMsg)
 		}
-		line := fitNameArea(nameContent, nameAreaW) + strings.Repeat(" ", modelSepW) + badgeCol(n.Model)
+		line := truncate(nameContent)
 		lines = append(lines, line)
 	}
 
@@ -443,8 +606,8 @@ func (m Model) eventsContent() string {
 			parentLabel = "session:" + node.ParentID[:8]
 		}
 		spawnLine := "Spawned by " + parentLabel
-		if !node.SpawnedAt.IsZero() {
-			spawnLine += "  at " + node.SpawnedAt.Format("Jan 02 15:04:05")
+		if lipgloss.Width(spawnLine) > innerW {
+			spawnLine = lipgloss.NewStyle().MaxWidth(innerW-1).Render(spawnLine) + "…"
 		}
 
 		prompt := node.Prompt
@@ -469,8 +632,21 @@ func (m Model) eventsContent() string {
 				sessionLabel = "session:" + node.ID
 			}
 		}
+		headerLabel := sessionLabel
+		childCount := len(node.Children)
+		if childCount > 0 {
+			noun := "subagent"
+			if childCount != 1 {
+				noun = "subagents"
+			}
+			headerLabel += fmt.Sprintf("  ·  %d %s", childCount, noun)
+		}
+		headerLabel += "  ·  " + statusLabel(node.Status)
+		if lipgloss.Width(headerLabel) > innerW {
+			headerLabel = lipgloss.NewStyle().MaxWidth(innerW-1).Render(headerLabel) + "…"
+		}
 		headerLines = []string{
-			mStyle.Render(sessionLabel),
+			mStyle.Render(headerLabel),
 			mStyle.Render(divider),
 		}
 	}
@@ -522,7 +698,7 @@ func (m Model) eventsContent() string {
 				header += "  " + mutedStyle.Render("▼")
 			} else {
 				if e.Message != "" {
-					msg := truncRunes(strings.ReplaceAll(e.Message, "\n", " "), 40)
+					msg := strings.ReplaceAll(e.Message, "\n", " ")
 					header += "  " + mutedStyle.Render("►") + "  " + mutedStyle.Render(msg)
 				}
 			}
@@ -633,9 +809,10 @@ func (m Model) eventsContent() string {
 	return eventSection
 }
 
-// inputPreview returns a short (≤20 rune) summary of a JSON tool input for
-// the collapsed event row. It extracts the most informative string value and
-// replaces the home directory prefix with ~.
+// inputPreview returns a summary of a JSON tool input for the collapsed event
+// row. It extracts the most informative string value and replaces the home
+// directory prefix with ~. No truncation is applied here; the caller clips the
+// full row to the panel width.
 func inputPreview(input, home string) string {
 	tilde := func(s string) string {
 		if home != "" && strings.HasPrefix(s, home) {
@@ -645,7 +822,7 @@ func inputPreview(input, home string) string {
 	}
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(input), &obj); err != nil {
-		return truncRunes(strings.ReplaceAll(input, "\n", " "), 20)
+		return strings.ReplaceAll(input, "\n", " ")
 	}
 	// Prefer high-signal keys that tend to carry the most context.
 	for _, k := range []string{"command", "cmd", "file_path", "path", "pattern", "query", "prompt"} {
@@ -655,7 +832,7 @@ func inputPreview(input, home string) string {
 		}
 		var s string
 		if err := json.Unmarshal(raw, &s); err == nil {
-			return truncRunes(strings.ReplaceAll(tilde(s), "\n", " "), 20)
+			return strings.ReplaceAll(tilde(s), "\n", " ")
 		}
 	}
 	// Fall back to first string value in sorted key order.
@@ -667,7 +844,7 @@ func inputPreview(input, home string) string {
 	for _, k := range keys {
 		var s string
 		if err := json.Unmarshal(obj[k], &s); err == nil {
-			return truncRunes(strings.ReplaceAll(tilde(s), "\n", " "), 20)
+			return strings.ReplaceAll(tilde(s), "\n", " ")
 		}
 	}
 	return fmt.Sprintf("{%d fields}", len(obj))
@@ -678,14 +855,16 @@ func inputPreview(input, home string) string {
 //   - Bash       → command field
 //   - Read/Edit  → file_path with home directory replaced by ~
 //   - Write      → file_path (raw)
-//   - other      → raw input truncated to 40 runes
+//   - other      → raw input (newlines replaced)
+//
+// No truncation is applied here; the caller clips the full row to the panel width.
 func permissionPreview(tool, input, home string) string {
 	if input == "" {
 		return ""
 	}
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(input), &obj); err != nil {
-		return truncRunes(strings.ReplaceAll(input, "\n", " "), 40)
+		return strings.ReplaceAll(input, "\n", " ")
 	}
 	getString := func(key string) (string, bool) {
 		raw, ok := obj[key]
@@ -701,28 +880,29 @@ func permissionPreview(tool, input, home string) string {
 	switch tool {
 	case "Bash":
 		if s, ok := getString("command"); ok {
-			return truncRunes(strings.ReplaceAll(s, "\n", " "), 40)
+			return strings.ReplaceAll(s, "\n", " ")
 		}
 	case "Read", "Edit":
 		if s, ok := getString("file_path"); ok {
 			if home != "" && strings.HasPrefix(s, home) {
 				s = "~" + s[len(home):]
 			}
-			return truncRunes(s, 40)
+			return s
 		}
 	case "Write":
 		if s, ok := getString("file_path"); ok {
 			if home != "" && strings.HasPrefix(s, home) {
 				s = "~" + s[len(home):]
 			}
-			return truncRunes(s, 40)
+			return s
 		}
 	}
-	return truncRunes(strings.ReplaceAll(input, "\n", " "), 40)
+	return strings.ReplaceAll(input, "\n", " ")
 }
 
 // formatKV formats a JSON string as indented "key: value" lines.
-// String values are truncated at 60 runes and home-dir prefixes replaced with ~.
+// Home-dir prefixes are replaced with ~. No truncation is applied here;
+// the caller clips each line to the panel width.
 // Falls back to plain line-split display for non-object JSON and plain text.
 func formatKV(s, home string) []string {
 	var obj map[string]json.RawMessage
@@ -749,7 +929,7 @@ func kvValue(raw json.RawMessage, home string) string {
 		if home != "" && strings.HasPrefix(s, home) {
 			s = "~" + s[len(home):]
 		}
-		return truncRunes(strings.ReplaceAll(s, "\n", "↵"), 60)
+		return strings.ReplaceAll(s, "\n", "↵")
 	}
 	str := strings.TrimSpace(string(raw))
 	if str == "true" || str == "false" || str == "null" {

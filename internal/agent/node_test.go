@@ -777,3 +777,102 @@ func TestApplyEvent_ModelUnknownDoesNotOverwrite(t *testing.T) {
 		t.Errorf("expected model to remain ModelOpus, got %q", tree.Nodes["s1"].Model)
 	}
 }
+
+func TestUsage_Add(t *testing.T) {
+	u := Usage{InputTokens: 100, OutputTokens: 50}
+	u.Add(Usage{InputTokens: 200, OutputTokens: 30, CacheReadInputTokens: 10})
+	if u.InputTokens != 300 {
+		t.Errorf("InputTokens: got %d, want 300", u.InputTokens)
+	}
+	if u.OutputTokens != 80 {
+		t.Errorf("OutputTokens: got %d, want 80", u.OutputTokens)
+	}
+	if u.CacheReadInputTokens != 10 {
+		t.Errorf("CacheReadInputTokens: got %d, want 10", u.CacheReadInputTokens)
+	}
+}
+
+func TestUsage_IsZero(t *testing.T) {
+	if !(Usage{}).IsZero() {
+		t.Error("empty Usage should be zero")
+	}
+	if (Usage{InputTokens: 1}).IsZero() {
+		t.Error("Usage with InputTokens should not be zero")
+	}
+}
+
+func TestApplyEvent_TokenUsage_AccumulatesOnNode(t *testing.T) {
+	// Each JSONL message carries per-turn counts; they are summed to get the total.
+	tree := NewTree()
+	tree.AddNode(Node{ID: "s1", Status: StatusRunning})
+
+	tree.ApplyEvent(Event{
+		Type:      "TokenUsage",
+		SessionID: "s1",
+		Usage:     Usage{InputTokens: 1000, OutputTokens: 200},
+	})
+	tree.ApplyEvent(Event{
+		Type:      "TokenUsage",
+		SessionID: "s1",
+		Usage:     Usage{InputTokens: 500, OutputTokens: 100, CacheReadInputTokens: 300},
+	})
+
+	node := tree.Nodes["s1"]
+	if node.Usage.InputTokens != 1500 {
+		t.Errorf("InputTokens: got %d, want 1500", node.Usage.InputTokens)
+	}
+	if node.Usage.OutputTokens != 300 {
+		t.Errorf("OutputTokens: got %d, want 300", node.Usage.OutputTokens)
+	}
+	if node.Usage.CacheReadInputTokens != 300 {
+		t.Errorf("CacheReadInputTokens: got %d, want 300", node.Usage.CacheReadInputTokens)
+	}
+}
+
+func TestApplyEvent_TokenUsage_DoesNotChangeStatus(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "s1", Status: StatusIdle})
+
+	tree.ApplyEvent(Event{
+		Type:      "TokenUsage",
+		SessionID: "s1",
+		Usage:     Usage{InputTokens: 100},
+	})
+
+	if tree.Nodes["s1"].Status != StatusIdle {
+		t.Errorf("expected status unchanged after TokenUsage event, got %d", tree.Nodes["s1"].Status)
+	}
+}
+
+func TestTotalUsage_SingleNode(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "root", Usage: Usage{InputTokens: 500, OutputTokens: 100}})
+
+	total := tree.TotalUsage("root")
+	if total.InputTokens != 500 || total.OutputTokens != 100 {
+		t.Errorf("TotalUsage: got %+v, want {500 100 0 0}", total)
+	}
+}
+
+func TestTotalUsage_RecursiveChildren(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "root", Usage: Usage{InputTokens: 1000, OutputTokens: 200}})
+	tree.AddNode(Node{ID: "child1", ParentID: "root", Usage: Usage{InputTokens: 300, OutputTokens: 50}})
+	tree.AddNode(Node{ID: "child2", ParentID: "root", Usage: Usage{InputTokens: 200, OutputTokens: 30}})
+
+	total := tree.TotalUsage("root")
+	if total.InputTokens != 1500 {
+		t.Errorf("InputTokens: got %d, want 1500", total.InputTokens)
+	}
+	if total.OutputTokens != 280 {
+		t.Errorf("OutputTokens: got %d, want 280", total.OutputTokens)
+	}
+}
+
+func TestTotalUsage_UnknownNode(t *testing.T) {
+	tree := NewTree()
+	u := tree.TotalUsage("no-such-node")
+	if !u.IsZero() {
+		t.Errorf("expected zero usage for unknown node, got %+v", u)
+	}
+}

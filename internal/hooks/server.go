@@ -8,8 +8,10 @@ package hooks
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/hcarminati/orchard/internal/agent"
@@ -98,10 +100,25 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 	defer r.Body.Close()
 
-	var p payload
-	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+	// Capture the raw body for debug logging before decoding.
+	var rawBody json.RawMessage
+	if err := json.NewDecoder(r.Body).Decode(&rawBody); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		return
+	}
+
+	var p payload
+	if err := json.Unmarshal(rawBody, &p); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	// Log PostToolUse and Stop payloads to /tmp/orchard-hooks.log so we can inspect
+	// what token usage fields (if any) Claude Code actually sends in these events.
+	if p.HookEventName == "PostToolUse" || p.HookEventName == "Stop" {
+		pretty, _ := json.MarshalIndent(rawBody, "", "  ")
+		line := fmt.Sprintf("=== %s [%s] ===\n%s\n\n", p.HookEventName, time.Now().Format(time.RFC3339), pretty)
+		_ = appendToFile("/tmp/orchard-hooks.log", line)
 	}
 
 	// Only process events for our working directory.
@@ -153,4 +170,16 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusOK)
+}
+
+// appendToFile appends text to path, creating the file if it doesn't exist.
+// Used only for debug hook logging; errors are intentionally ignored.
+func appendToFile(path, text string) error {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.WriteString(text)
+	return err
 }
