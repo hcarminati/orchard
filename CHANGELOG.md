@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-05-25
+
+### Added
+- Help overlay (`?`): full-screen keybinding reference organized into sections (Navigation, Events, Tree, View Modes, Session Management); includes live "Current State" panel showing active filter/panel/tab; `?`, `esc`, or `q` closes it
+- `orchard setup` subcommand: non-destructively merges Orchard hook entries (PreToolUse/PostToolUse/Stop/SubagentStop/Notification) into `~/.claude/settings.json`; `--port`, `--dry-run`, `--verify` flags
+- `orchard doctor` subcommand: runs health checks (port availability, settings.json, hooks configured, projects directory readable, Go runtime version); exits 0 on all-pass, 1 otherwise
+- MCP Servers tab (`MCP`): third right-panel tab reads `mcpServers` from `~/.claude/settings.json` and lists server name and command/URL
+- `internal/setup` package with `Run()`, `DefaultSettingsPath()`, and `DryRun()` — full test coverage
+- `internal/doctor` package with `RunAll()` and `AllPass()` — per-check tests
+
 ## [0.8.0] - 2026-05-25
 
 ### Added
