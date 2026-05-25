@@ -144,7 +144,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	// Think of the program as the event loop — it handles keyboard input,
 	// window resize events, and calls our model's Update/View functions.
 	p := tea.NewProgram(
-		ui.New(initialNodes, eventCh, subagentsRoot, hiddenIDs, expandedIDs, orchardCfg.Budget, orchardCfg.MaxTokens), // model seeded with session data + live event channel
+		ui.New(initialNodes, eventCh, subagentsRoot, hiddenIDs, expandedIDs, orchardCfg.Budget, orchardCfg.MaxTokens, orchardCfg.WatchdogMinutes, orchardCfg.CostAlert), // model seeded with session data + live event channel
 		tea.WithAltScreen(),           // use the terminal's alternate screen buffer so we
 		// don't mess up the user's scrollback history
 		tea.WithMouseCellMotion(), // enable mouse click support for node focus
@@ -230,7 +230,7 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 
 	// Start the TUI with empty initial nodes — events arrive through the channel.
 	p := tea.NewProgram(
-		ui.New(nil, eventCh, "", nil, nil, 0, 0),
+		ui.New(nil, eventCh, "", nil, nil, 0, 0, 0, 0),
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),
 	)

@@ -10,6 +10,7 @@ package ui
 
 import (
 	"math"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -118,6 +119,14 @@ type subagentTailMsg struct {
 	ch    <-chan agent.Event
 }
 
+// watchdogTickMsg is sent by scheduleWatchdog after watchdogMinutes. The TUI
+// uses it to show a ⏱ badge on the node if no tool call has arrived since the
+// timer was scheduled.
+type watchdogTickMsg struct {
+	sessionID string
+	gen       int
+}
+
 // idleTimeoutMsg is sent by scheduleIdle when a session has been quiet for
 // idleDuration. The gen field lets Update discard stale timers: if a new
 // tool call arrived after the timer was scheduled, the generation will have
@@ -176,7 +185,15 @@ type Model struct {
 	watchedSubagents map[string]bool // agentIDs we have already started watching (scan+tail), to prevent duplicates
 	budget           float64         // monthly spend cap in USD; 0 means unconfigured
 	maxTokens        int             // monthly token cap; 0 means unconfigured
+	watchdogMinutes  int             // minutes without a tool call before ⏱ badge; 0 disables
+	watchdogGen      map[string]int  // per-session watchdog timer generation
+	watchdogFired    map[string]int  // per-session watchdog fire count (0=ok, 1=⏱, 2=⏱⏱)
+	costAlert        float64         // per-session USD alert threshold; 0 disables
 	timelineMode     bool            // when true, the left panel shows the timeline view
+	searchOpen       bool            // whether the fuzzy search bar is active
+	searchQuery      string          // current search filter typed by the user
+	costAlertDismiss map[string]bool // session IDs where the cost alert has been dismissed
+	bellSent         map[string]bool // session IDs where the terminal bell has already fired
 }
 
 // autoHideAge is how long a session must be inactive before it is automatically
@@ -196,11 +213,13 @@ const autoHideAge = 7 * 24 * time.Hour
 // loaded from state.json; pass nil for none. All root sessions start collapsed
 // by default — running sessions are auto-expanded, and any ID in expandedIDs
 // is also expanded.
-func New(nodes []agent.Node, eventCh <-chan agent.Event, subagentsRoot string, hiddenIDs map[string]bool, expandedIDs map[string]bool, budget float64, maxTokens int) Model {
+func New(nodes []agent.Node, eventCh <-chan agent.Event, subagentsRoot string, hiddenIDs map[string]bool, expandedIDs map[string]bool, budget float64, maxTokens int, watchdogMinutes int, costAlert float64) Model {
 	m := newWithClock(nodes, eventCh, hiddenIDs, time.Now())
 	m.subagentsRoot = subagentsRoot
 	m.budget = budget
 	m.maxTokens = maxTokens
+	m.watchdogMinutes = watchdogMinutes
+	m.costAlert = costAlert
 	// Collapse all root nodes by default.
 	for _, id := range m.agents.Roots {
 		if m.effectiveStatus(id) == agent.StatusRunning {
@@ -283,6 +302,10 @@ func newWithClock(nodes []agent.Node, eventCh <-chan agent.Event, hiddenIDs map[
 		hiddenSessions:   hiddenIDs,
 		pendingSave:      pendingSave,
 		watchedSubagents: make(map[string]bool),
+		watchdogGen:      make(map[string]int),
+		watchdogFired:    make(map[string]int),
+		costAlertDismiss: make(map[string]bool),
+		bellSent:         make(map[string]bool),
 	}
 }
 
@@ -588,6 +611,28 @@ func waitForEvent(ch <-chan agent.Event) tea.Cmd {
 	}
 }
 
+// bellMsg is returned by bellCmd when the terminal bell write completes.
+type bellMsg struct{}
+
+// bellCmd returns a Cmd that writes the terminal bell character (\a) to stderr
+// and returns a bellMsg. Using stderr keeps the bell out of any captured output.
+func bellCmd() tea.Cmd {
+	return func() tea.Msg {
+		os.Stderr.WriteString("\a") //nolint:errcheck
+		return bellMsg{}
+	}
+}
+
+// scheduleWatchdog returns a Cmd that sends a watchdogTickMsg after d. If a
+// new tool call arrives before the timer fires, the generation is incremented
+// and the message is discarded in Update.
+func scheduleWatchdog(sessionID string, gen int, d time.Duration) tea.Cmd {
+	return func() tea.Msg {
+		time.Sleep(d)
+		return watchdogTickMsg{sessionID: sessionID, gen: gen}
+	}
+}
+
 // scheduleIdle returns a Cmd that sends an idleTimeoutMsg after idleDuration.
 // gen is the current timer generation for sessionID; if a newer tool call
 // arrives before the timer fires, the generation will be incremented and the
@@ -692,6 +737,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 					}
 					m.modalScroll = 0
+				}
+			}
+			return m, nil
+		}
+		// Search bar intercepts all keys while open.
+		if m.searchOpen {
+			switch msg.String() {
+			case "esc":
+				m.searchOpen = false
+				m.searchQuery = ""
+			case "enter":
+				m.searchOpen = false
+			case "backspace", "ctrl+h":
+				if len(m.searchQuery) > 0 {
+					runes := []rune(m.searchQuery)
+					m.searchQuery = string(runes[:len(runes)-1])
+				}
+			default:
+				// Accept printable characters into the search query.
+				s := msg.String()
+				if len(s) == 1 && s[0] >= 0x20 {
+					m.searchQuery += s
 				}
 			}
 			return m, nil
@@ -820,6 +887,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "t", "T":
 			m.timelineMode = !m.timelineMode
+		case "/":
+			// Open fuzzy search in the events panel.
+			m.searchOpen = true
+			m.searchQuery = ""
+			m.activePanel = panelEvents
+		case "esc":
+			// Dismiss cost alert banner if one is showing.
+			if node := m.focusedNode(); node != nil {
+				m.costAlertDismiss[node.ID] = true
+			}
 		case "G":
 			if m.activePanel == panelEvents {
 				m.scrollEventToBottom()
@@ -980,9 +1057,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Increment the generation so any previously scheduled timer is invalidated.
 			m.timerGen[e.SessionID]++
 			cmd = tea.Batch(cmd, scheduleIdle(e.SessionID, m.timerGen[e.SessionID]))
+			// (Re)schedule the watchdog timer if enabled. Any new tool call resets the clock.
+			if m.watchdogMinutes > 0 {
+				m.watchdogGen[e.SessionID]++
+				m.watchdogFired[e.SessionID] = 0 // reset badge on new activity
+				d := time.Duration(m.watchdogMinutes) * time.Minute
+				cmd = tea.Batch(cmd, scheduleWatchdog(e.SessionID, m.watchdogGen[e.SessionID], d))
+			}
+			// Fire terminal bell when a new session error arrives.
+			if node, ok := m.agents.Nodes[e.SessionID]; ok && node.Status == agent.StatusError {
+				if !m.bellSent[e.SessionID] {
+					m.bellSent[e.SessionID] = true
+					cmd = tea.Batch(cmd, bellCmd())
+				}
+			}
 		case "PreToolUse":
-			// A new tool call started — invalidate any pending idle or done timer.
+			// A new tool call started — invalidate any pending idle or done timer and watchdog.
 			m.timerGen[e.SessionID]++
+			m.watchdogGen[e.SessionID]++
+			m.watchdogFired[e.SessionID] = 0
 			// When the parent spawns a subagent, begin watching for its JSONL file.
 			// We delay 500 ms to give Claude Code time to create the file.
 			if e.Tool == "Agent" && m.subagentsRoot != "" {
@@ -995,6 +1088,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// increment the generation and the timer will be discarded.
 			m.timerGen[e.SessionID]++
 			cmd = tea.Batch(cmd, scheduleDone(e.SessionID, m.timerGen[e.SessionID]))
+			// Bell on done (only once per session).
+			if !m.bellSent[e.SessionID] {
+				m.bellSent[e.SessionID] = true
+				cmd = tea.Batch(cmd, bellCmd())
+			}
 		}
 		return m, cmd
 
@@ -1065,6 +1163,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+	// A watchdog timer fired. Increment the fired count for the node if the
+	// generation still matches (no new tool call reset the timer).
+	case watchdogTickMsg:
+		if m.watchdogGen[msg.sessionID] == msg.gen {
+			if node, ok := m.agents.Nodes[msg.sessionID]; ok && node.Status == agent.StatusRunning {
+				count := m.watchdogFired[msg.sessionID] + 1
+				m.watchdogFired[msg.sessionID] = count
+				// Schedule a second tick at 2× the watchdog interval to escalate the badge.
+				if count == 1 && m.watchdogMinutes > 0 {
+					m.watchdogGen[msg.sessionID]++
+					d := time.Duration(m.watchdogMinutes) * time.Minute
+					return m, scheduleWatchdog(msg.sessionID, m.watchdogGen[msg.sessionID], d)
+				}
+			}
+		}
+
 	case hideSavedMsg:
 		// Save completed; nothing to do (errors are silently dropped — the TUI
 		// should not crash because a config write failed).
@@ -1082,7 +1196,14 @@ func (m Model) View() string {
 		return "loading…"
 	}
 
-	bodyH := m.height - footerHeight
+	// Reserve one line for the cost alert banner if it should be shown.
+	costBanner := m.renderCostAlertBanner()
+	bannerH := 0
+	if costBanner != "" {
+		bannerH = 1
+	}
+
+	bodyH := m.height - footerHeight - bannerH
 	body := m.renderBody(bodyH)
 	footer := m.renderFooter()
 
@@ -1091,5 +1212,10 @@ func (m Model) View() string {
 		footer = m.renderModalFooterBar()
 	}
 
-	return lipgloss.JoinVertical(lipgloss.Left, body, footer)
+	parts := []string{body}
+	if costBanner != "" {
+		parts = append(parts, costBanner)
+	}
+	parts = append(parts, footer)
+	return lipgloss.JoinVertical(lipgloss.Left, parts...)
 }
