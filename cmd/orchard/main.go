@@ -28,6 +28,7 @@ import (
 	"github.com/hcarminati/orchard/internal/session"
 	"github.com/hcarminati/orchard/internal/setup"
 	"github.com/hcarminati/orchard/internal/ui"
+	"github.com/hcarminati/orchard/internal/wizard"
 )
 
 // version is the current release. Updated at build time via -ldflags when
@@ -50,6 +51,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 			return runHistory(args[1:], stdout, stderr)
 		case "cancel":
 			return runCancel(args[1:], stdout, stderr)
+		case "init":
+			return runInit(args[1:], stdout, stderr)
 		case "setup":
 			return runSetup(args[1:], stdout, stderr)
 		case "doctor":
@@ -399,6 +402,56 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 
 	if !doctor.AllPass(checks) {
 		return 1
+	}
+	return 0
+}
+
+// runInit handles the `orchard init` subcommand.
+// It launches the interactive first-time setup wizard.
+func runInit(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("orchard init", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.Usage = func() {
+		fmt.Fprintln(stderr, "usage: orchard init [--port PORT]")
+		fmt.Fprintln(stderr, "")
+		fmt.Fprintln(stderr, "Interactive first-time setup: merges hooks, runs health checks, creates config.")
+		fmt.Fprintln(stderr, "")
+		fmt.Fprintln(stderr, "flags:")
+		fs.PrintDefaults()
+	}
+
+	portStr := fs.String("port", "7070", "hook server port")
+
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	port, err := parsePort(*portStr)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: invalid --port %q: %v\n", *portStr, err)
+		return 1
+	}
+
+	settingsPath, err := setup.DefaultSettingsPath()
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+
+	configPath, err := config.DefaultConfigPath()
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+
+	result, err := wizard.Run(port, settingsPath, configPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+
+	if result.Completed {
+		return 0
 	}
 	return 0
 }

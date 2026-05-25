@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-05-25
+
+### Added
+- `orchard init [--port PORT]`: interactive first-time setup wizard; steps through merging hooks into settings.json, running health checks, and optionally creating `~/.config/orchard/config.toml` with budget/watchdog/cost_alert values
+- `internal/wizard` package: Bubbletea model with stepWelcome → stepSetup → stepDoctor → stepConfig → stepDone flow; 12 unit tests covering all input paths
+- `config.DefaultConfigPath()`: exported helper for resolving the config.toml path
+
 ## [1.3.0] - 2026-05-25
 
 ### Added
