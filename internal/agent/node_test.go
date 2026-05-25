@@ -777,3 +777,250 @@ func TestApplyEvent_ModelUnknownDoesNotOverwrite(t *testing.T) {
 		t.Errorf("expected model to remain ModelOpus, got %q", tree.Nodes["s1"].Model)
 	}
 }
+
+func TestUsage_Add(t *testing.T) {
+	u := Usage{InputTokens: 100, OutputTokens: 50}
+	u.Add(Usage{InputTokens: 200, OutputTokens: 30, CacheReadInputTokens: 10})
+	if u.InputTokens != 300 {
+		t.Errorf("InputTokens: got %d, want 300", u.InputTokens)
+	}
+	if u.OutputTokens != 80 {
+		t.Errorf("OutputTokens: got %d, want 80", u.OutputTokens)
+	}
+	if u.CacheReadInputTokens != 10 {
+		t.Errorf("CacheReadInputTokens: got %d, want 10", u.CacheReadInputTokens)
+	}
+}
+
+func TestUsage_IsZero(t *testing.T) {
+	if !(Usage{}).IsZero() {
+		t.Error("empty Usage should be zero")
+	}
+	if (Usage{InputTokens: 1}).IsZero() {
+		t.Error("Usage with InputTokens should not be zero")
+	}
+}
+
+func TestApplyEvent_TokenUsage_AccumulatesOnNode(t *testing.T) {
+	// Each JSONL message carries per-turn counts; they are summed to get the total.
+	tree := NewTree()
+	tree.AddNode(Node{ID: "s1", Status: StatusRunning})
+
+	tree.ApplyEvent(Event{
+		Type:      "TokenUsage",
+		SessionID: "s1",
+		Usage:     Usage{InputTokens: 1000, OutputTokens: 200},
+	})
+	tree.ApplyEvent(Event{
+		Type:      "TokenUsage",
+		SessionID: "s1",
+		Usage:     Usage{InputTokens: 500, OutputTokens: 100, CacheReadInputTokens: 300},
+	})
+
+	node := tree.Nodes["s1"]
+	if node.Usage.InputTokens != 1500 {
+		t.Errorf("InputTokens: got %d, want 1500", node.Usage.InputTokens)
+	}
+	if node.Usage.OutputTokens != 300 {
+		t.Errorf("OutputTokens: got %d, want 300", node.Usage.OutputTokens)
+	}
+	if node.Usage.CacheReadInputTokens != 300 {
+		t.Errorf("CacheReadInputTokens: got %d, want 300", node.Usage.CacheReadInputTokens)
+	}
+}
+
+func TestApplyEvent_TokenUsage_DoesNotChangeStatus(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "s1", Status: StatusIdle})
+
+	tree.ApplyEvent(Event{
+		Type:      "TokenUsage",
+		SessionID: "s1",
+		Usage:     Usage{InputTokens: 100},
+	})
+
+	if tree.Nodes["s1"].Status != StatusIdle {
+		t.Errorf("expected status unchanged after TokenUsage event, got %d", tree.Nodes["s1"].Status)
+	}
+}
+
+func TestTotalUsage_SingleNode(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "root", Usage: Usage{InputTokens: 500, OutputTokens: 100}})
+
+	total := tree.TotalUsage("root")
+	if total.InputTokens != 500 || total.OutputTokens != 100 {
+		t.Errorf("TotalUsage: got %+v, want {500 100 0 0}", total)
+	}
+}
+
+func TestTotalUsage_RecursiveChildren(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "root", Usage: Usage{InputTokens: 1000, OutputTokens: 200}})
+	tree.AddNode(Node{ID: "child1", ParentID: "root", Usage: Usage{InputTokens: 300, OutputTokens: 50}})
+	tree.AddNode(Node{ID: "child2", ParentID: "root", Usage: Usage{InputTokens: 200, OutputTokens: 30}})
+
+	total := tree.TotalUsage("root")
+	if total.InputTokens != 1500 {
+		t.Errorf("InputTokens: got %d, want 1500", total.InputTokens)
+	}
+	if total.OutputTokens != 280 {
+		t.Errorf("OutputTokens: got %d, want 280", total.OutputTokens)
+	}
+}
+
+func TestTotalUsage_UnknownNode(t *testing.T) {
+	tree := NewTree()
+	u := tree.TotalUsage("no-such-node")
+	if !u.IsZero() {
+		t.Errorf("expected zero usage for unknown node, got %+v", u)
+	}
+}
+
+// --- appendUnique ---
+
+func TestAppendUnique_AddsNew(t *testing.T) {
+	s := appendUnique([]string{"Bash", "Read"}, "Write")
+	if len(s) != 3 || s[2] != "Write" {
+		t.Errorf("expected [Bash Read Write], got %v", s)
+	}
+}
+
+func TestAppendUnique_SkipsDuplicate(t *testing.T) {
+	s := appendUnique([]string{"Bash", "Read"}, "Bash")
+	if len(s) != 2 {
+		t.Errorf("expected no change on duplicate, got %v", s)
+	}
+}
+
+func TestAppendUnique_EmptySlice(t *testing.T) {
+	s := appendUnique(nil, "Bash")
+	if len(s) != 1 || s[0] != "Bash" {
+		t.Errorf("expected [Bash], got %v", s)
+	}
+}
+
+// --- Tools and Skills populated from events ---
+
+func TestApplyEvent_PopulatesTools(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "s1", Tools: []string{}, Skills: []string{}})
+
+	tree.ApplyEvent(Event{Type: "PreToolUse", SessionID: "s1", Tool: "Bash", Timestamp: time.Now()})
+	tree.ApplyEvent(Event{Type: "PreToolUse", SessionID: "s1", Tool: "Read", Timestamp: time.Now()})
+	// Duplicate — should not be added again.
+	tree.ApplyEvent(Event{Type: "PreToolUse", SessionID: "s1", Tool: "Bash", Timestamp: time.Now()})
+
+	n := tree.Nodes["s1"]
+	if len(n.Tools) != 2 {
+		t.Errorf("expected 2 deduplicated tools, got %d: %v", len(n.Tools), n.Tools)
+	}
+	if n.Tools[0] != "Bash" || n.Tools[1] != "Read" {
+		t.Errorf("unexpected tools order: %v", n.Tools)
+	}
+}
+
+func TestApplyEvent_DoesNotAddAgentToTools(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "s1", Tools: []string{}, Skills: []string{}})
+
+	tree.ApplyEvent(Event{Type: "PreToolUse", SessionID: "s1", Tool: "Agent", ToolUseID: "tu1", Timestamp: time.Now()})
+
+	n := tree.Nodes["s1"]
+	if len(n.Tools) != 0 {
+		t.Errorf("Agent tool should not be added to Tools slice, got %v", n.Tools)
+	}
+}
+
+func TestApplyEvent_PopulatesSkills(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "s1", Tools: []string{}, Skills: []string{}})
+
+	tree.ApplyEvent(Event{Type: "SkillTrigger", SessionID: "s1", Tool: "commit", Timestamp: time.Now()})
+	tree.ApplyEvent(Event{Type: "SkillTrigger", SessionID: "s1", Tool: "build", Timestamp: time.Now()})
+	// Duplicate.
+	tree.ApplyEvent(Event{Type: "SkillTrigger", SessionID: "s1", Tool: "commit", Timestamp: time.Now()})
+
+	n := tree.Nodes["s1"]
+	if len(n.Skills) != 2 {
+		t.Errorf("expected 2 deduplicated skills, got %d: %v", len(n.Skills), n.Skills)
+	}
+}
+
+func TestApplyEvent_ToolsAndSkillsIndependent(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "s1", Tools: []string{}, Skills: []string{}})
+
+	tree.ApplyEvent(Event{Type: "PreToolUse", SessionID: "s1", Tool: "Bash", Timestamp: time.Now()})
+	tree.ApplyEvent(Event{Type: "SkillTrigger", SessionID: "s1", Tool: "Bash", Timestamp: time.Now()})
+
+	n := tree.Nodes["s1"]
+	if len(n.Tools) != 1 || n.Tools[0] != "Bash" {
+		t.Errorf("expected Tools=[Bash], got %v", n.Tools)
+	}
+	if len(n.Skills) != 1 || n.Skills[0] != "Bash" {
+		t.Errorf("expected Skills=[Bash], got %v", n.Skills)
+	}
+}
+
+// --- Loop detection ---
+
+func TestApplyEvent_LoopDetection_ThresholdNotMet(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "s1", Tools: []string{}, Skills: []string{}})
+
+	for i := 0; i < LoopThreshold-1; i++ {
+		tree.ApplyEvent(Event{Type: "PreToolUse", SessionID: "s1", Tool: "Bash", Timestamp: time.Now()})
+	}
+
+	n := tree.Nodes["s1"]
+	if n.ConsecutiveTools != 0 {
+		t.Errorf("expected ConsecutiveTools=0 below threshold, got %d", n.ConsecutiveTools)
+	}
+}
+
+func TestApplyEvent_LoopDetection_ThresholdMet(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "s1", Tools: []string{}, Skills: []string{}})
+
+	for i := 0; i < LoopThreshold; i++ {
+		tree.ApplyEvent(Event{Type: "PreToolUse", SessionID: "s1", Tool: "Bash", Timestamp: time.Now()})
+	}
+
+	n := tree.Nodes["s1"]
+	if n.ConsecutiveTools < LoopThreshold {
+		t.Errorf("expected ConsecutiveTools>=%d at threshold, got %d", LoopThreshold, n.ConsecutiveTools)
+	}
+}
+
+func TestApplyEvent_LoopDetection_ResetOnDifferentTool(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "s1", Tools: []string{}, Skills: []string{}})
+
+	for i := 0; i < LoopThreshold; i++ {
+		tree.ApplyEvent(Event{Type: "PreToolUse", SessionID: "s1", Tool: "Bash", Timestamp: time.Now()})
+	}
+	// Calling a different tool resets the loop counter.
+	tree.ApplyEvent(Event{Type: "PreToolUse", SessionID: "s1", Tool: "Read", Timestamp: time.Now()})
+
+	n := tree.Nodes["s1"]
+	if n.ConsecutiveTools != 0 {
+		t.Errorf("expected ConsecutiveTools reset to 0 after different tool, got %d", n.ConsecutiveTools)
+	}
+}
+
+func TestApplyEvent_LoopDetection_CounterIncrementsBeeyondThreshold(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "s1", Tools: []string{}, Skills: []string{}})
+
+	extra := 2
+	for i := 0; i < LoopThreshold+extra; i++ {
+		tree.ApplyEvent(Event{Type: "PreToolUse", SessionID: "s1", Tool: "Grep", Timestamp: time.Now()})
+	}
+
+	n := tree.Nodes["s1"]
+	want := LoopThreshold + extra
+	if n.ConsecutiveTools != want {
+		t.Errorf("expected ConsecutiveTools=%d, got %d", want, n.ConsecutiveTools)
+	}
+}

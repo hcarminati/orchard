@@ -58,6 +58,14 @@ orchard --version         # print version and exit
 
 More keybindings coming as features are added.
 
+## Development
+
+To run from source:
+
+```sh
+go run ./cmd/orchard
+```
+
 ## Contributing
 
 Active development happens on the `dev` branch. Features and fixes branch off `dev` as `feat/name` or `fix/name` and merge back via PR. Nothing commits directly to `main` — `main` is tagged releases only.

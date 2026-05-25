@@ -532,7 +532,7 @@ func TestParseSubagentEvents_ExtractsToolUseBlocks(t *testing.T) {
 {"type":"assistant","agentId":"xyz","sessionId":"parent","timestamp":"2026-01-01T10:00:02Z","message":{"role":"assistant","content":[{"type":"tool_use","name":"Glob","input":{"pattern":"**/*.go"}}]}}
 `)
 
-	events, _ := parseSubagentEvents(path, "xyz")
+	events, _, _ := parseSubagentEvents(path, "xyz")
 	if len(events) != 2 {
 		t.Fatalf("expected 2 events, got %d", len(events))
 	}
@@ -598,9 +598,54 @@ func TestLoadSubagentNodes_SetsPromptAndSpawnedAt(t *testing.T) {
 }
 
 func TestParseSubagentEvents_MissingFileReturnsNil(t *testing.T) {
-	events, _ := parseSubagentEvents("/does/not/exist.jsonl", "xyz")
+	events, _, _ := parseSubagentEvents("/does/not/exist.jsonl", "xyz")
 	if events != nil {
 		t.Errorf("expected nil for missing file, got %v", events)
+	}
+}
+
+func TestParseNodes_AccumulatesTokenUsage(t *testing.T) {
+	dir := t.TempDir()
+	path := writeTempJSONL(t, dir, "session.jsonl", []string{
+		`{"type":"assistant","sessionId":"s1","message":{"role":"assistant","model":"claude-sonnet-4-6","content":[],"usage":{"input_tokens":1000,"output_tokens":200,"cache_creation_input_tokens":50,"cache_read_input_tokens":300}}}`,
+		`{"type":"assistant","sessionId":"s1","message":{"role":"assistant","model":"claude-sonnet-4-6","content":[],"usage":{"input_tokens":500,"output_tokens":100}}}`,
+	})
+
+	nodes, err := parseNodes(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(nodes) != 1 {
+		t.Fatalf("expected 1 node, got %d", len(nodes))
+	}
+	u := nodes[0].Usage
+	if u.InputTokens != 1500 {
+		t.Errorf("InputTokens: got %d, want 1500", u.InputTokens)
+	}
+	if u.OutputTokens != 300 {
+		t.Errorf("OutputTokens: got %d, want 300", u.OutputTokens)
+	}
+	if u.CacheCreationInputTokens != 50 {
+		t.Errorf("CacheCreationInputTokens: got %d, want 50", u.CacheCreationInputTokens)
+	}
+	if u.CacheReadInputTokens != 300 {
+		t.Errorf("CacheReadInputTokens: got %d, want 300", u.CacheReadInputTokens)
+	}
+}
+
+func TestParseSubagentEvents_AccumulatesUsage(t *testing.T) {
+	dir := t.TempDir()
+	path := writeTempJSONL(t, dir, "agent-abc.jsonl", []string{
+		`{"agentId":"abc","sessionId":"parent","timestamp":"2026-01-01T00:00:00Z","message":{"role":"assistant","model":"claude-haiku-4-5","content":[],"usage":{"input_tokens":800,"output_tokens":150}}}`,
+		`{"agentId":"abc","sessionId":"parent","timestamp":"2026-01-01T00:01:00Z","message":{"role":"assistant","model":"claude-haiku-4-5","content":[],"usage":{"input_tokens":400,"output_tokens":75}}}`,
+	})
+
+	_, _, usage := parseSubagentEvents(path, "abc")
+	if usage.InputTokens != 1200 {
+		t.Errorf("InputTokens: got %d, want 1200", usage.InputTokens)
+	}
+	if usage.OutputTokens != 225 {
+		t.Errorf("OutputTokens: got %d, want 225", usage.OutputTokens)
 	}
 }
 
@@ -696,3 +741,4 @@ func TestLoadFrom_ParentUUID_EstablishesHierarchy(t *testing.T) {
 		t.Errorf("expected child.ParentID='parent-id', got %q", nodes[childIdx].ParentID)
 	}
 }
+

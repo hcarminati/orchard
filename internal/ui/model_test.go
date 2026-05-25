@@ -209,8 +209,9 @@ func TestView_ShowsAgentCount_WhenSessionLoaded(t *testing.T) {
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	view := next.(Model).View()
 
-	if !strings.Contains(view, "· 2") {
-		t.Errorf("expected '· 2' in Agents panel border, got:\n%s", view)
+	// Header now shows status summary ("1 running · 1 done") instead of raw count.
+	if !strings.Contains(view, "running") || !strings.Contains(view, "done") {
+		t.Errorf("expected status summary in Agents panel border, got:\n%s", view)
 	}
 }
 

@@ -172,8 +172,11 @@ type Model struct {
 	confirmHide     string                 // non-empty: session ID awaiting hide confirmation
 	hideStatusMsg   string                 // transient one-line status (e.g. "Cannot hide active session")
 	pendingSave     bool                   // true when hiddenSessions was mutated before Init() ran (auto-hide at startup)
-	subagentsRoot   string                 // base dir for subagent discovery: ~/.claude/projects/{cwdDir}/
-	watchedSubagents map[string]bool       // agentIDs we have already started watching (scan+tail), to prevent duplicates
+	subagentsRoot    string          // base dir for subagent discovery: ~/.claude/projects/{cwdDir}/
+	watchedSubagents map[string]bool // agentIDs we have already started watching (scan+tail), to prevent duplicates
+	budget           float64         // monthly spend cap in USD; 0 means unconfigured
+	maxTokens        int             // monthly token cap; 0 means unconfigured
+	timelineMode     bool            // when true, the left panel shows the timeline view
 }
 
 // autoHideAge is how long a session must be inactive before it is automatically
@@ -193,9 +196,11 @@ const autoHideAge = 7 * 24 * time.Hour
 // loaded from state.json; pass nil for none. All root sessions start collapsed
 // by default — running sessions are auto-expanded, and any ID in expandedIDs
 // is also expanded.
-func New(nodes []agent.Node, eventCh <-chan agent.Event, subagentsRoot string, hiddenIDs map[string]bool, expandedIDs map[string]bool) Model {
+func New(nodes []agent.Node, eventCh <-chan agent.Event, subagentsRoot string, hiddenIDs map[string]bool, expandedIDs map[string]bool, budget float64, maxTokens int) Model {
 	m := newWithClock(nodes, eventCh, hiddenIDs, time.Now())
 	m.subagentsRoot = subagentsRoot
+	m.budget = budget
+	m.maxTokens = maxTokens
 	// Collapse all root nodes by default.
 	for _, id := range m.agents.Roots {
 		if m.effectiveStatus(id) == agent.StatusRunning {
@@ -423,9 +428,7 @@ func isAbsorbedPermission(events []agent.Event, idx int) bool {
 
 // innerWidth returns the usable content width inside the right panel.
 func (m Model) innerWidth() int {
-	leftW := m.width * 35 / 100
-	rightW := m.width - leftW
-	return max(1, rightW-2)
+	return max(1, m.width-m.agentsPanelW()-2)
 }
 
 // wrappedLineCount returns how many display lines s occupies when wrapped at
@@ -815,6 +818,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
+		case "t", "T":
+			m.timelineMode = !m.timelineMode
 		case "G":
 			if m.activePanel == panelEvents {
 				m.scrollEventToBottom()

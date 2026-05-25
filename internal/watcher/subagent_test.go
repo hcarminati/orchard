@@ -251,3 +251,52 @@ func TestParseTimestamp_Invalid(t *testing.T) {
 		t.Error("expected zero time for invalid timestamp string")
 	}
 }
+
+func TestParseJSONL_EmitsTokenUsageEvent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent-abc.jsonl")
+	line := `{"agentId":"abc","sessionId":"parent","timestamp":"2026-01-01T00:00:00Z","message":{"role":"assistant","model":"claude-sonnet-4-6","content":[],"usage":{"input_tokens":1000,"output_tokens":250,"cache_read_input_tokens":500}}}` + "\n"
+	if err := os.WriteFile(path, []byte(line), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	events, _ := parseJSONL(path, "abc", "parent")
+
+	var usageEvents []agent.Event
+	for _, e := range events {
+		if e.Type == "TokenUsage" {
+			usageEvents = append(usageEvents, e)
+		}
+	}
+	if len(usageEvents) != 1 {
+		t.Fatalf("expected 1 TokenUsage event, got %d", len(usageEvents))
+	}
+	u := usageEvents[0].Usage
+	if u.InputTokens != 1000 {
+		t.Errorf("InputTokens: got %d, want 1000", u.InputTokens)
+	}
+	if u.OutputTokens != 250 {
+		t.Errorf("OutputTokens: got %d, want 250", u.OutputTokens)
+	}
+	if u.CacheReadInputTokens != 500 {
+		t.Errorf("CacheReadInputTokens: got %d, want 500", u.CacheReadInputTokens)
+	}
+}
+
+func TestParseJSONL_NoTokenUsageEventWhenZeroUsage(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent-abc.jsonl")
+	line := `{"agentId":"abc","sessionId":"parent","timestamp":"2026-01-01T00:00:00Z","message":{"role":"assistant","content":[]}}` + "\n"
+	if err := os.WriteFile(path, []byte(line), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	events, _ := parseJSONL(path, "abc", "parent")
+
+	for _, e := range events {
+		if e.Type == "TokenUsage" {
+			t.Errorf("expected no TokenUsage event when usage is zero, got one: %+v", e)
+		}
+	}
+}
+
