@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-05-25
+
+### Added
+- `orchard cancel [--project PATH] [--dry-run]`: discovers running Claude Code processes for the project via `ps` + `lsof` and sends SIGINT; `--dry-run` prints which PIDs would be cancelled without acting
+- `X` key in TUI: opens a cancel overlay showing the focused session name, SIGINT command, and how to use the `orchard cancel` subcommand; `esc` or `X` closes it
+- `internal/process` package: `FindForCWD(cwd)` discovers Claude Code processes by CWD, `SendInterrupt(pid)` sends SIGINT; tested for graceful handling of missing/non-existent processes
+
 ## [1.2.0] - 2026-05-25
 
 ### Added
