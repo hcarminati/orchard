@@ -21,6 +21,7 @@ import (
 	"github.com/hcarminati/orchard/internal/agent"
 	"github.com/hcarminati/orchard/internal/config"
 	"github.com/hcarminati/orchard/internal/doctor"
+	"github.com/hcarminati/orchard/internal/history"
 	"github.com/hcarminati/orchard/internal/hooks"
 	"github.com/hcarminati/orchard/internal/replay"
 	"github.com/hcarminati/orchard/internal/session"
@@ -44,6 +45,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		switch args[0] {
 		case "replay":
 			return runReplay(args[1:], stdout, stderr)
+		case "history":
+			return runHistory(args[1:], stdout, stderr)
 		case "setup":
 			return runSetup(args[1:], stdout, stderr)
 		case "doctor":
@@ -344,6 +347,113 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if !doctor.AllPass(checks) {
+		return 1
+	}
+	return 0
+}
+
+// runHistory handles the `orchard history` subcommand.
+// It opens a TUI that lets the user browse, replay, or export past sessions.
+func runHistory(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("orchard history", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.Usage = func() {
+		fmt.Fprintln(stderr, "usage: orchard history [--project PATH]")
+		fmt.Fprintln(stderr, "")
+		fmt.Fprintln(stderr, "Browse past Claude Code sessions for a project.")
+		fmt.Fprintln(stderr, "")
+		fmt.Fprintln(stderr, "flags:")
+		fs.PrintDefaults()
+	}
+
+	project := fs.String("project", "", "project working directory (default: current directory)")
+
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	cwd := *project
+	if cwd == "" {
+		var err error
+		cwd, err = os.Getwd()
+		if err != nil {
+			fmt.Fprintf(stderr, "error: could not determine working directory: %v\n", err)
+			return 1
+		}
+	}
+
+	sessions, err := history.ListForCWD(cwd)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: could not list sessions: %v\n", err)
+		return 1
+	}
+	if len(sessions) == 0 {
+		fmt.Fprintln(stderr, "no past sessions found for this project.")
+		return 0
+	}
+
+	result, err := history.Run(sessions)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+
+	switch result.Action {
+	case history.ActionReplay:
+		return runReplaySession(result.Session, stdout, stderr)
+	case history.ActionExport:
+		return runExportSession(result.Session, stdout, stderr)
+	}
+	return 0
+}
+
+// runReplaySession replays a specific session selected from the history picker.
+func runReplaySession(s history.SessionMeta, stdout, stderr io.Writer) int {
+	nodes, err := session.LoadFile(s.File)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: could not load session file: %v\n", err)
+		return 1
+	}
+	if len(nodes) == 0 {
+		fmt.Fprintln(stderr, "error: session file contains no agent data.")
+		return 1
+	}
+
+	dur := replay.Duration(nodes)
+	fmt.Fprintf(stderr, "replaying session %s: %d agents, %s\n",
+		s.ID[:8], len(nodes), formatReplayDur(dur))
+
+	eventCh := make(chan agent.Event, 256)
+	done := make(chan struct{})
+	go func() {
+		replay.Run(nodes, eventCh, replay.Options{Speed: 1.0}, done)
+	}()
+
+	p := tea.NewProgram(
+		ui.New(nil, eventCh, "", nil, nil, 0, 0, 0, 0),
+		tea.WithAltScreen(),
+		tea.WithMouseCellMotion(),
+	)
+	if _, err := p.Run(); err != nil {
+		close(done)
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+	close(done)
+	return 0
+}
+
+// runExportSession exports a session's raw JSONL to stdout.
+func runExportSession(s history.SessionMeta, stdout, stderr io.Writer) int {
+	f, err := os.Open(s.File)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+	defer f.Close()
+
+	if _, err := io.Copy(stdout, f); err != nil {
+		fmt.Fprintf(stderr, "error writing export: %v\n", err)
 		return 1
 	}
 	return 0

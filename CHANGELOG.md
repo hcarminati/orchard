@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-05-25
+
+### Added
+- `orchard history [--project PATH]`: interactive TUI that lists all past Claude Code sessions for a project, sorted newest-first; each row shows date, duration, event count, and first user prompt snippet
+- Browse with `j`/`k` or arrow keys; press `enter` to replay any session through the standard TUI; press `e` to export the raw JSONL to stdout; `q` quits
+- `internal/history` package: `List(dir)`, `ListForCWD(cwd)`, `SessionMeta` struct with ID, File, StartTime, EndTime, EventCount, Snippet fields
+- `session.LoadFile(path)`: new exported function for loading a specific JSONL file (used by history-to-replay handoff)
+
 ## [1.0.0] - 2026-05-25
 
 ### Added
