@@ -1197,15 +1197,6 @@ func kvValue(raw json.RawMessage, home string) string {
 	return "{…}" // nested object
 }
 
-// truncRunes truncates s to at most n runes, appending … if trimmed.
-func truncRunes(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-	return string(r[:n]) + "…"
-}
-
 // wrapString splits s into lines of at most width runes, splitting first on
 // existing newlines then on the width boundary.
 func wrapString(s string, width int) []string {
