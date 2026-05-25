@@ -47,19 +47,25 @@ type payload struct {
 
 // Server is an embedded HTTP server that receives and forwards Claude Code hook events.
 type Server struct {
-	// cwd is the working directory Orchard is watching.
-	// Events whose CWD field does not match are silently ignored.
-	cwd string
+	// cwds is the set of working directories Orchard is watching.
+	// Events whose CWD field is not in this set are silently ignored.
+	// An empty set accepts events from all directories.
+	cwds map[string]bool
 	// out is the channel hook events are sent to after parsing and filtering.
 	out chan<- agent.Event
 	// httpServer is the underlying HTTP server, held so Shutdown can stop it.
 	httpServer *http.Server
 }
 
-// NewServer creates a Server that listens on addr, filters events by cwd,
-// and sends parsed events to out.
-func NewServer(cwd string, out chan<- agent.Event, addr string) *Server {
-	s := &Server{cwd: cwd, out: out}
+// NewServer creates a Server that listens on addr, filters events by cwds,
+// and sends parsed events to out. Pass one or more working directories to
+// watch; pass nil or an empty slice to accept events from all directories.
+func NewServer(cwds []string, out chan<- agent.Event, addr string) *Server {
+	cwdSet := make(map[string]bool, len(cwds))
+	for _, c := range cwds {
+		cwdSet[c] = true
+	}
+	s := &Server{cwds: cwdSet, out: out}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handle)
 	s.httpServer = &http.Server{Addr: addr, Handler: mux}
@@ -121,8 +127,9 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		_ = appendToFile("/tmp/orchard-hooks.log", line)
 	}
 
-	// Only process events for our working directory.
-	if p.CWD != s.cwd {
+	// Only process events for our watched working directories.
+	// An empty set means "watch everything" (e.g. in tests without CWD filtering).
+	if len(s.cwds) > 0 && !s.cwds[p.CWD] {
 		w.WriteHeader(http.StatusOK)
 		return
 	}

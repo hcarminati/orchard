@@ -244,6 +244,16 @@ func (m Model) renderSearchBar() string {
 	return bar + strings.Repeat(" ", gap)
 }
 
+// projectBadge returns a muted "[basename] " prefix for multi-project display.
+// Returns "" when ProjectDir is empty (single-project mode).
+func projectBadge(n *agent.Node) string {
+	if n.ProjectDir == "" {
+		return ""
+	}
+	name := filepath.Base(n.ProjectDir)
+	return lipgloss.NewStyle().Foreground(colorMuted).Render("["+name+"] ")
+}
+
 // loopBadge returns a warning string when a node is stuck in a tool-call loop,
 // empty string otherwise. The badge shows the tool name and repetition count
 // so the developer can see at a glance what is repeating.
@@ -1065,7 +1075,7 @@ func (m Model) agentsContent() string {
 			if n.Winner {
 				indicator = " ✓"
 			}
-			nameContent := prefix + icon + dot(statusColor(n.Status)) + " " + n.Name + indicator
+			nameContent := prefix + projectBadge(n) + icon + dot(statusColor(n.Status)) + " " + n.Name + indicator
 			if n.Status == agent.StatusError && n.ErrorMsg != "" {
 				nameContent += " " + lipgloss.NewStyle().Foreground(colorRed).Render("✗ "+n.ErrorMsg)
 			} else {
@@ -1105,7 +1115,11 @@ func (m Model) agentsContent() string {
 				prefix = "  "
 			}
 		}
-		nameContent := prefix + connector + icon + dot(statusColor(n.Status)) + " " + n.Name
+		badge := ""
+		if entry.depth == 0 {
+			badge = projectBadge(n)
+		}
+		nameContent := prefix + connector + badge + icon + dot(statusColor(n.Status)) + " " + n.Name
 		if n.Status == agent.StatusError && n.ErrorMsg != "" {
 			nameContent += " " + lipgloss.NewStyle().Foreground(colorRed).Render("✗ "+n.ErrorMsg)
 		} else {

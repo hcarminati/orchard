@@ -60,7 +60,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	showVersion := fs.Bool("version", false, "print version and exit")
 	demo := fs.Bool("demo", false, "populate with fake agents for local testing")
 	portStr := fs.String("port", "7070", "port for the Claude Code hook server")
-	project := fs.String("project", "", "override the project working directory (default: current directory)")
+	project := fs.String("project", "", "project working directory to watch (default: current directory; deprecated, use --watch)")
+	var watchPaths multiFlag
+	fs.Var(&watchPaths, "watch", "project directory to observe; repeat for multiple: --watch /a --watch /b")
 
 	if err := fs.Parse(args); err != nil {
 		// flag.ContinueOnError already wrote the error to stderr.
@@ -78,15 +80,35 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	// Determine which working directory to filter hook events for.
-	cwd := *project
-	if cwd == "" {
-		cwd, err = os.Getwd()
+	// Resolve the set of working directories to watch.
+	cwds := []string(watchPaths)
+	if *project != "" {
+		cwds = append(cwds, *project)
+	}
+	if len(cwds) == 0 {
+		var d string
+		d, err = os.Getwd()
 		if err != nil {
 			fmt.Fprintf(stderr, "error: could not determine working directory: %v\n", err)
 			return 1
 		}
+		cwds = []string{d}
 	}
+	// Deduplicate while preserving order.
+	{
+		seen := make(map[string]bool)
+		deduped := cwds[:0]
+		for _, c := range cwds {
+			if !seen[c] {
+				seen[c] = true
+				deduped = append(deduped, c)
+			}
+		}
+		cwds = deduped
+	}
+	// cwd is the primary working directory (first in the list), used for
+	// subagents root computation and single-project-mode features.
+	cwd := cwds[0]
 
 	// Load existing session data from ~/.claude/projects/ to hydrate the initial tree.
 	// Errors here are non-fatal: the TUI will show "waiting for session…" instead.
@@ -94,9 +116,19 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if *demo {
 		initialNodes = demoNodes()
 	} else {
-		initialNodes, err = session.Load(cwd)
-		if err != nil {
-			fmt.Fprintf(stderr, "warning: could not load session data: %v\n", err)
+		for _, c := range cwds {
+			nodes, lerr := session.Load(c)
+			if lerr != nil {
+				fmt.Fprintf(stderr, "warning: could not load session data for %s: %v\n", c, lerr)
+				continue
+			}
+			// Tag nodes with their project directory when watching multiple projects.
+			if len(cwds) > 1 {
+				for i := range nodes {
+					nodes[i].ProjectDir = c
+				}
+			}
+			initialNodes = append(initialNodes, nodes...)
 		}
 	}
 
@@ -138,7 +170,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	// so it must run in its own goroutine. http.ErrServerClosed is expected
 	// on clean shutdown and is not logged.
 	addr := fmt.Sprintf(":%d", port)
-	hookServer := hooks.NewServer(cwd, eventCh, addr)
+	hookServer := hooks.NewServer(cwds, eventCh, addr)
 	go func() {
 		if err := hookServer.Start(); err != nil && err != http.ErrServerClosed {
 			// Log to stderr but do not crash the TUI — the user can still use
@@ -171,6 +203,22 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+// multiFlag is a flag.Value that accumulates multiple --watch values into a slice.
+// Comma-separated values in a single flag invocation are also split, so
+// --watch a,b and --watch a --watch b are equivalent.
+type multiFlag []string
+
+func (f *multiFlag) String() string { return strings.Join(*f, ",") }
+func (f *multiFlag) Set(v string) error {
+	for _, s := range strings.Split(v, ",") {
+		s = strings.TrimSpace(s)
+		if s != "" {
+			*f = append(*f, s)
+		}
+	}
+	return nil
 }
 
 // parsePort validates that s is an integer in the valid TCP port range [1, 65535].

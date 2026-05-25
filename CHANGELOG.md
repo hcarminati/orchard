@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-05-25
+
+### Added
+- `--watch PATH` flag: repeat to observe multiple project directories simultaneously — `orchard --watch /proj/a --watch /proj/b`; comma-separated values also accepted
+- Hook server now accepts events from all watched directories instead of a single CWD
+- Root session nodes in the Agents panel show a muted `[projectname]` prefix badge when multiple projects are loaded, so sessions from different repos are clearly distinguished
+- `session.Load` called once per watched directory at startup; nodes are tagged with `Node.ProjectDir` in multi-watch mode
+
 ## [1.1.0] - 2026-05-25
 
 ### Added

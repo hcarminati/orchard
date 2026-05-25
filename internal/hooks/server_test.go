@@ -20,7 +20,7 @@ const testCWD = "/Users/test/myproject"
 func newTestServer(t *testing.T) (*httptest.Server, chan agent.Event) {
 	t.Helper()
 	ch := make(chan agent.Event, 10)
-	s := NewServer(testCWD, ch, "")
+	s := NewServer([]string{testCWD}, ch, "")
 	return httptest.NewServer(s.Handler()), ch
 }
 
@@ -211,7 +211,7 @@ func TestHandle_Notification_MessageDelivered(t *testing.T) {
 
 func TestServer_GracefulShutdown(t *testing.T) {
 	ch := make(chan agent.Event, 1)
-	s := NewServer(testCWD, ch, "")
+	s := NewServer([]string{testCWD}, ch, "")
 
 	// Pre-bind the listener so the port is guaranteed ready before we call Shutdown.
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -342,5 +342,64 @@ func TestHandle_ModelParsedAndForwarded(t *testing.T) {
 		}
 
 		srv.Close()
+	}
+}
+
+const testCWD2 = "/Users/test/otherproject"
+
+func TestNewServer_MultiCWD_AcceptsAllWatchedDirs(t *testing.T) {
+	ch := make(chan agent.Event, 10)
+	s := NewServer([]string{testCWD, testCWD2}, ch, "")
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+
+	// Post event from first watched dir.
+	postJSON(t, srv, payload{SessionID: "s1", HookEventName: "PreToolUse", CWD: testCWD, ToolName: "Bash"}).Body.Close()
+	e1 := receiveEvent(t, ch)
+	if e1.SessionID != "s1" {
+		t.Errorf("expected s1, got %q", e1.SessionID)
+	}
+
+	// Post event from second watched dir.
+	postJSON(t, srv, payload{SessionID: "s2", HookEventName: "PreToolUse", CWD: testCWD2, ToolName: "Grep"}).Body.Close()
+	e2 := receiveEvent(t, ch)
+	if e2.SessionID != "s2" {
+		t.Errorf("expected s2, got %q", e2.SessionID)
+	}
+}
+
+func TestNewServer_MultiCWD_RejectsUnwatchedDir(t *testing.T) {
+	ch := make(chan agent.Event, 10)
+	s := NewServer([]string{testCWD, testCWD2}, ch, "")
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+
+	resp := postJSON(t, srv, payload{
+		SessionID:     "s-other",
+		HookEventName: "PreToolUse",
+		CWD:           "/some/other/path",
+		ToolName:      "Bash",
+	})
+	resp.Body.Close()
+
+	// Channel should remain empty since the CWD is not in our watch list.
+	select {
+	case e := <-ch:
+		t.Errorf("unexpected event for unwatched CWD: %v", e)
+	default:
+		// expected: no event
+	}
+}
+
+func TestNewServer_EmptyCWDList_AcceptsAll(t *testing.T) {
+	ch := make(chan agent.Event, 10)
+	s := NewServer(nil, ch, "")
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+
+	postJSON(t, srv, payload{SessionID: "s1", HookEventName: "PreToolUse", CWD: "/any/path", ToolName: "Bash"}).Body.Close()
+	e := receiveEvent(t, ch)
+	if e.SessionID != "s1" {
+		t.Errorf("expected s1, got %q", e.SessionID)
 	}
 }
