@@ -80,6 +80,10 @@ type Event struct {
 	Timestamp time.Time
 }
 
+// LoopThreshold is the number of consecutive identical tool calls before a
+// node is considered looping. Visible as a ⚠ badge in the Agents panel.
+const LoopThreshold = 3
+
 type Node struct {
 	ID        string
 	ParentID  string
@@ -96,6 +100,11 @@ type Node struct {
 	SpawnedAt time.Time
 	Events    []Event
 	Usage     Usage // accumulated token counts across all events on this node
+
+	// Loop detection: tracks the last tool called and how many times in a row.
+	lastTool          string
+	consecutiveCount  int
+	ConsecutiveTools  int // max consecutive same-tool calls observed; resets when a different tool fires
 }
 
 func NewNode(id string) Node {
@@ -174,10 +183,11 @@ func (t *Tree) ApplyEvent(e Event) {
 				name = "session:" + name[:8]
 			}
 			n := Node{
-				ID:       e.SessionID,
-				ParentID: e.ParentID,
-				Name:     name,
-				Status:   StatusRunning,
+				ID:        e.SessionID,
+				ParentID:  e.ParentID,
+				Name:      name,
+				Status:    StatusRunning,
+				SpawnedAt: e.Timestamp,
 			}
 			t.AddNode(n)
 			node = t.Nodes[e.SessionID]
@@ -230,8 +240,27 @@ func (t *Tree) ApplyEvent(e Event) {
 		}
 	case "SkillTrigger":
 		node.Status = StatusRunning
+		if e.Tool != "" {
+			node.Skills = appendUnique(node.Skills, e.Tool)
+		}
 	case "PreToolUse":
 		node.Status = StatusRunning
+		if e.Tool != "" && e.Tool != "Agent" {
+			node.Tools = appendUnique(node.Tools, e.Tool)
+			// Loop detection: count consecutive identical tool calls.
+			if e.Tool == node.lastTool {
+				node.consecutiveCount++
+			} else {
+				node.lastTool = e.Tool
+				node.consecutiveCount = 1
+			}
+			if node.consecutiveCount >= LoopThreshold {
+				node.ConsecutiveTools = node.consecutiveCount
+			} else if node.consecutiveCount == 1 && node.ConsecutiveTools > 0 {
+				// A different tool fired — reset the public counter.
+				node.ConsecutiveTools = 0
+			}
+		}
 		if e.Tool == "Agent" && e.ToolUseID != "" {
 			var input struct {
 				SubagentType string `json:"subagent_type"`
@@ -243,14 +272,15 @@ func (t *Tree) ApplyEvent(e Event) {
 				}
 			}
 			child := Node{
-				ID:       e.ToolUseID,
-				ParentID: e.SessionID,
-				Name:     name,
-				Status:   StatusRunning,
-				Children: []string{},
-				Tools:    []string{},
-				Skills:   []string{},
-				Events:   []Event{},
+				ID:        e.ToolUseID,
+				ParentID:  e.SessionID,
+				Name:      name,
+				Status:    StatusRunning,
+				SpawnedAt: e.Timestamp,
+				Children:  []string{},
+				Tools:     []string{},
+				Skills:    []string{},
+				Events:    []Event{},
 			}
 			t.AddNode(child)
 			t.pendingSubagents[e.SessionID] = append(t.pendingSubagents[e.SessionID], e.ToolUseID)
@@ -262,6 +292,16 @@ func (t *Tree) ApplyEvent(e Event) {
 		node.Status = StatusError
 		node.ErrorMsg = e.Message
 	}
+}
+
+// appendUnique appends s to slice only if it is not already present.
+func appendUnique(slice []string, s string) []string {
+	for _, v := range slice {
+		if v == s {
+			return slice
+		}
+	}
+	return append(slice, s)
 }
 
 // TotalUsage returns the sum of Usage across nodeID and all its descendants.

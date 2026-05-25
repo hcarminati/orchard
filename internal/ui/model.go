@@ -176,6 +176,7 @@ type Model struct {
 	watchedSubagents map[string]bool // agentIDs we have already started watching (scan+tail), to prevent duplicates
 	budget           float64         // monthly spend cap in USD; 0 means unconfigured
 	maxTokens        int             // monthly token cap; 0 means unconfigured
+	timelineMode     bool            // when true, the left panel shows the timeline view
 }
 
 // autoHideAge is how long a session must be inactive before it is automatically
@@ -817,6 +818,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
+		case "t", "T":
+			m.timelineMode = !m.timelineMode
 		case "G":
 			if m.activePanel == panelEvents {
 				m.scrollEventToBottom()

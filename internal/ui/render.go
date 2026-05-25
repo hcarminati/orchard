@@ -194,6 +194,91 @@ func (m Model) renderCostWithBudget(totalCost float64, borderColor lipgloss.Colo
 	return lipgloss.NewStyle().Foreground(costColor).Render(costStr + "/" + budgetStr)
 }
 
+// loopBadge returns a warning string when a node is stuck in a tool-call loop,
+// empty string otherwise. The badge shows the tool name and repetition count
+// so the developer can see at a glance what is repeating.
+func loopBadge(n *agent.Node) string {
+	if n.ConsecutiveTools < agent.LoopThreshold {
+		return ""
+	}
+	label := fmt.Sprintf("⚠ loop×%d", n.ConsecutiveTools)
+	return lipgloss.NewStyle().Foreground(colorYellow).Bold(true).Render(label)
+}
+
+// shortToolName returns a compact display label for a tool name.
+// MCP tools (prefixed "mcp__") are abbreviated to "mcp:suffix" where suffix is
+// the portion after the last "__". All other names are lowercased.
+func shortToolName(tool string) string {
+	if strings.HasPrefix(tool, "mcp__") {
+		parts := strings.Split(tool, "__")
+		return "mcp:" + strings.ToLower(parts[len(parts)-1])
+	}
+	return strings.ToLower(tool)
+}
+
+// nodePills returns a compact pill string rendered for a node row.
+// Tool names are shown in their semantic color; skill names get a green ▸ prefix.
+// Returns empty string when the node has no recorded tools or skills.
+func nodePills(n *agent.Node) string {
+	if len(n.Tools) == 0 && len(n.Skills) == 0 {
+		return ""
+	}
+	var parts []string
+	for _, t := range n.Tools {
+		parts = append(parts, lipgloss.NewStyle().Foreground(toolColor(t)).Render(shortToolName(t)))
+	}
+	for _, s := range n.Skills {
+		name := s
+		if strings.Contains(s, ":") {
+			// "figma:use" → "use", keep short
+			idx := strings.LastIndex(s, ":")
+			name = s[idx+1:]
+		}
+		parts = append(parts, lipgloss.NewStyle().Foreground(colorGreen).Render("▸"+name))
+	}
+	return strings.Join(parts, " ")
+}
+
+// statusSummary counts running/idle/done/error across all visible real nodes
+// (group header rows are skipped). Only non-zero buckets are included in the
+// returned parts slice, ordered: running → idle → done → error.
+func (m Model) statusSummary() []string {
+	var running, idle, done, errored int
+	for _, v := range m.visibleNodes() {
+		if v.id == "" {
+			continue // skip group header rows
+		}
+		n := m.agents.Nodes[v.id]
+		if n == nil {
+			continue
+		}
+		switch n.Status {
+		case agent.StatusRunning:
+			running++
+		case agent.StatusIdle:
+			idle++
+		case agent.StatusDone:
+			done++
+		case agent.StatusError:
+			errored++
+		}
+	}
+	var parts []string
+	if running > 0 {
+		parts = append(parts, fmt.Sprintf("%d running", running))
+	}
+	if idle > 0 {
+		parts = append(parts, fmt.Sprintf("%d idle", idle))
+	}
+	if done > 0 {
+		parts = append(parts, fmt.Sprintf("%d done", done))
+	}
+	if errored > 0 {
+		parts = append(parts, fmt.Sprintf("%d error", errored))
+	}
+	return parts
+}
+
 // statusLabel returns a short lowercase string for a node status, used in the events header.
 func statusLabel(s agent.Status) string {
 	switch s {
@@ -242,6 +327,11 @@ func (m Model) renderFooter() string {
 	}
 
 	content := " " + bind("j/k", "navigate")
+	if m.timelineMode {
+		content += bind("t", "tree view")
+	} else {
+		content += bind("t", "timeline")
+	}
 	if m.cursorHasChildren() {
 		content += bind("space", "expand/collapse")
 	}
@@ -301,22 +391,29 @@ func (m Model) renderBody(height int) string {
 	if leftActive {
 		leftBorderColor = colorAccent
 	}
-	visibleCount := 0
-	for _, v := range m.visibleNodes() {
-		if v.id != "" { // skip virtual group header rows
-			visibleCount++
-		}
+	agentsTitleText := "Agents"
+	if m.timelineMode {
+		agentsTitleText = "Agents [Timeline]"
 	}
-	agentCount := lipgloss.NewStyle().Foreground(leftBorderColor).Render(fmt.Sprintf(" · %d", visibleCount))
-	agentsTitle := lipgloss.NewStyle().Bold(true).Foreground(leftBorderColor).Render("Agents") + agentCount
+	agentsTitle := lipgloss.NewStyle().Bold(true).Foreground(leftBorderColor).Render(agentsTitleText)
 	sep := lipgloss.NewStyle().Foreground(leftBorderColor).Render(" · ")
+	// Status summary: "3 running · 1 idle · 2 done" (only non-zero buckets).
+	for _, part := range m.statusSummary() {
+		agentsTitle += sep + lipgloss.NewStyle().Foreground(leftBorderColor).Render(part)
+	}
 	if totalCost := m.totalCost(); totalCost > 0 {
 		agentsTitle += sep + m.renderCostWithBudget(totalCost, leftBorderColor)
 	}
 	if totalTok := m.totalTokens(); totalTok > 0 {
 		agentsTitle += sep + m.renderTokensWithMax(totalTok, leftBorderColor)
 	}
-	left := m.renderPanel(agentsTitle, m.agentsContent(), leftW, height, leftActive)
+	var leftContent string
+	if m.timelineMode {
+		leftContent = m.timelineContent()
+	} else {
+		leftContent = m.agentsContent()
+	}
+	left := m.renderPanel(agentsTitle, leftContent, leftW, height, leftActive)
 
 	rightActive := m.activePanel == panelEvents
 	rightBorderColor := colorMuted
@@ -375,12 +472,153 @@ func (m Model) rightTabContent() string {
 	return ""
 }
 
-// filesContent returns placeholder content for the Files panel.
+// fileChange holds one file-modification event for display in the Files tab.
+type fileChange struct {
+	op        string    // "write", "edit", "create", "notebook"
+	path      string    // file path from tool input
+	agentName string    // name of the agent that made the change
+	when      time.Time // event timestamp
+}
+
+// fileChangeTool reports whether a PostToolUse event represents a file write/edit.
+func fileChangeTool(tool string) (op string, ok bool) {
+	switch tool {
+	case "Write":
+		return "write", true
+	case "Edit", "MultiEdit":
+		return "edit", true
+	case "NotebookEdit":
+		return "notebook", true
+	default:
+		return "", false
+	}
+}
+
+// extractFilePath parses file_path from a tool input JSON string.
+// Returns empty string when the field is absent or the JSON is malformed.
+func extractFilePath(input string) string {
+	var v struct {
+		FilePath string `json:"file_path"`
+	}
+	if err := json.Unmarshal([]byte(input), &v); err != nil {
+		return ""
+	}
+	return v.FilePath
+}
+
+// allFileChanges collects all file-write events across every agent node,
+// ordered oldest-first.
+func (m Model) allFileChanges() []fileChange {
+	var changes []fileChange
+	// Walk nodes in tree order so changes are collected in a predictable sequence.
+	var walk func(nodeID string)
+	walk = func(nodeID string) {
+		n := m.agents.Nodes[nodeID]
+		if n == nil {
+			return
+		}
+		for _, e := range n.Events {
+			if e.Type != "PostToolUse" {
+				continue
+			}
+			op, ok := fileChangeTool(e.Tool)
+			if !ok {
+				continue
+			}
+			path := extractFilePath(e.Input)
+			if path == "" {
+				continue
+			}
+			changes = append(changes, fileChange{
+				op:        op,
+				path:      path,
+				agentName: n.Name,
+				when:      e.Timestamp,
+			})
+		}
+		for _, childID := range n.Children {
+			walk(childID)
+		}
+	}
+	for _, rootID := range m.sortedRoots() {
+		walk(rootID)
+	}
+	return changes
+}
+
+// filesContent renders the Files tab: all file writes/edits across every agent,
+// most-recent first, with operation label, truncated path, agent, and relative time.
 func (m Model) filesContent() string {
-	return lipgloss.NewStyle().
-		Foreground(colorMuted).
-		Padding(0, 1).
-		Render("Focus an agent to view its file activity.")
+	muted := lipgloss.NewStyle().Foreground(colorMuted).Padding(0, 1)
+
+	if !m.hasSession {
+		return muted.Render("Waiting for session…")
+	}
+
+	changes := m.allFileChanges()
+	if len(changes) == 0 {
+		return muted.Render("No file writes or edits recorded yet.")
+	}
+
+	innerW := m.innerWidth()
+
+	// Show most-recent changes first.
+	lines := make([]string, 0, len(changes))
+	now := time.Now()
+	for i := len(changes) - 1; i >= 0; i-- {
+		fc := changes[i]
+
+		// Operation label with color.
+		var opColor lipgloss.Color
+		switch fc.op {
+		case "write":
+			opColor = colorCoral
+		case "edit":
+			opColor = colorBlue
+		default:
+			opColor = colorTeal
+		}
+		opLabel := lipgloss.NewStyle().Foreground(opColor).Render(fmt.Sprintf("%-7s", fc.op))
+
+		// Relative timestamp.
+		age := now.Sub(fc.when)
+		var ageStr string
+		switch {
+		case age < time.Minute:
+			ageStr = "just now"
+		case age < time.Hour:
+			ageStr = fmt.Sprintf("%dm ago", int(age.Minutes()))
+		default:
+			ageStr = fmt.Sprintf("%dh ago", int(age.Hours()))
+		}
+		ageLabel := lipgloss.NewStyle().Foreground(colorMuted).Render(ageStr)
+
+		// Agent name (capped).
+		agent := fc.agentName
+		if len([]rune(agent)) > 12 {
+			agent = string([]rune(agent)[:11]) + "…"
+		}
+		agentLabel := lipgloss.NewStyle().Foreground(colorMuted).Render(agent)
+
+		// File path — use the budget remaining after labels.
+		// layout: "op      path…   agent  age"
+		labelW := 7 + 1 + 12 + 1 + 8 + 2 // rough column budget
+		pathBudget := max(10, innerW-labelW)
+		path := fc.path
+		// Show only the last N path components when path is long.
+		if len([]rune(path)) > pathBudget {
+			path = "…" + string([]rune(path)[len([]rune(path))-pathBudget+1:])
+		}
+		pathLabel := lipgloss.NewStyle().Foreground(colorFg).Render(path)
+
+		line := opLabel + " " + pathLabel + "  " + agentLabel + "  " + ageLabel
+		if lipgloss.Width(line) > innerW {
+			line = lipgloss.NewStyle().MaxWidth(innerW-1).Render(line) + "…"
+		}
+		lines = append(lines, line)
+	}
+
+	return strings.Join(lines, "\n")
 }
 
 // renderPanel draws a bordered panel with the title embedded in the top border:
@@ -534,6 +772,12 @@ func (m Model) agentsContent() string {
 			nameContent := prefix + icon + dot(statusColor(n.Status)) + " " + n.Name + indicator
 			if n.Status == agent.StatusError && n.ErrorMsg != "" {
 				nameContent += " " + lipgloss.NewStyle().Foreground(colorRed).Render("✗ "+n.ErrorMsg)
+			} else {
+				if badge := loopBadge(n); badge != "" {
+					nameContent += "  " + badge
+				} else if pills := nodePills(n); pills != "" {
+					nameContent += "  " + pills
+				}
 			}
 			line := truncate(nameContent)
 			if hasWinner && !n.Winner {
@@ -565,6 +809,12 @@ func (m Model) agentsContent() string {
 		nameContent := prefix + connector + icon + dot(statusColor(n.Status)) + " " + n.Name
 		if n.Status == agent.StatusError && n.ErrorMsg != "" {
 			nameContent += " " + lipgloss.NewStyle().Foreground(colorRed).Render("✗ "+n.ErrorMsg)
+		} else {
+			if badge := loopBadge(n); badge != "" {
+				nameContent += "  " + badge
+			} else if pills := nodePills(n); pills != "" {
+				nameContent += "  " + pills
+			}
 		}
 		line := truncate(nameContent)
 		lines = append(lines, line)

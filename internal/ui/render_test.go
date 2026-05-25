@@ -968,3 +968,388 @@ func TestFooter_SpaceHint_OnlyWhenCursorOnNodeWithChildren(t *testing.T) {
 		t.Errorf("expected no 'expand/collapse' hint when cursor is on a leaf, got:\n%s", view)
 	}
 }
+
+// --- shortToolName ---
+
+func TestShortToolName_KnownTools(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"Bash", "bash"},
+		{"Read", "read"},
+		{"Edit", "edit"},
+	}
+	for _, tc := range cases {
+		got := shortToolName(tc.in)
+		if got != tc.want {
+			t.Errorf("shortToolName(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestShortToolName_MCP(t *testing.T) {
+	got := shortToolName("mcp__plugin_figma_figma__use_figma")
+	if got != "mcp:use_figma" {
+		t.Errorf("shortToolName MCP = %q, want %q", got, "mcp:use_figma")
+	}
+}
+
+// --- nodePills ---
+
+func TestNodePills_Empty(t *testing.T) {
+	n := &agent.Node{Tools: []string{}, Skills: []string{}}
+	if got := nodePills(n); got != "" {
+		t.Errorf("nodePills on empty node = %q, want empty", got)
+	}
+}
+
+func TestNodePills_ToolsOnly(t *testing.T) {
+	n := &agent.Node{Tools: []string{"Bash", "Read"}, Skills: []string{}}
+	got := nodePills(n)
+	if !strings.Contains(got, "bash") {
+		t.Errorf("expected 'bash' in pills, got: %q", got)
+	}
+	if !strings.Contains(got, "read") {
+		t.Errorf("expected 'read' in pills, got: %q", got)
+	}
+}
+
+func TestNodePills_SkillsOnly(t *testing.T) {
+	n := &agent.Node{Tools: []string{}, Skills: []string{"commit", "build"}}
+	got := nodePills(n)
+	if !strings.Contains(got, "▸commit") {
+		t.Errorf("expected '▸commit' in pills, got: %q", got)
+	}
+	if !strings.Contains(got, "▸build") {
+		t.Errorf("expected '▸build' in pills, got: %q", got)
+	}
+}
+
+func TestNodePills_ToolsAndSkills(t *testing.T) {
+	n := &agent.Node{Tools: []string{"Bash"}, Skills: []string{"myskill"}}
+	got := nodePills(n)
+	if !strings.Contains(got, "bash") {
+		t.Errorf("expected tool pill in output, got: %q", got)
+	}
+	if !strings.Contains(got, "▸myskill") {
+		t.Errorf("expected skill pill in output, got: %q", got)
+	}
+}
+
+func TestNodePills_SkillWithNamespaceStripped(t *testing.T) {
+	n := &agent.Node{Tools: []string{}, Skills: []string{"figma:use-figma"}}
+	got := nodePills(n)
+	// The namespace prefix should be stripped: "figma:" → show "use-figma"
+	if !strings.Contains(got, "▸use-figma") {
+		t.Errorf("expected namespace-stripped skill pill, got: %q", got)
+	}
+	if strings.Contains(got, "figma:") {
+		t.Errorf("expected namespace to be stripped from skill pill, got: %q", got)
+	}
+}
+
+// --- Pills appear inline on tree node rows ---
+
+func TestView_PillsAppearsInAgentsPanel(t *testing.T) {
+	nodes := []agent.Node{
+		{
+			ID:     "a",
+			Name:   "agent-a",
+			Status: agent.StatusRunning,
+			Tools:  []string{"Bash", "Read"},
+			Skills: []string{"commit"},
+		},
+	}
+	m := newWithClock(nodes, nil, nil, time.Time{})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
+	view := next.(Model).View()
+
+	if !strings.Contains(view, "bash") {
+		t.Errorf("expected 'bash' pill in view, got:\n%s", view)
+	}
+	if !strings.Contains(view, "▸commit") {
+		t.Errorf("expected '▸commit' skill pill in view, got:\n%s", view)
+	}
+}
+
+func TestView_PillsNotShownWhenError(t *testing.T) {
+	nodes := []agent.Node{
+		{
+			ID:       "a",
+			Name:     "agent-a",
+			Status:   agent.StatusError,
+			ErrorMsg: "something failed",
+			Tools:    []string{"Bash"},
+			Skills:   []string{},
+		},
+	}
+	m := newWithClock(nodes, nil, nil, time.Time{})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
+	view := next.(Model).View()
+
+	// Error message should appear; pills should not (error takes priority).
+	if !strings.Contains(view, "something failed") {
+		t.Errorf("expected error message in view, got:\n%s", view)
+	}
+	if strings.Contains(view, "bash") {
+		t.Errorf("expected no tool pills when error is showing, got:\n%s", view)
+	}
+}
+
+// --- statusSummary ---
+
+func TestStatusSummary_AllBuckets(t *testing.T) {
+	nodes := []agent.Node{
+		{ID: "a", Status: agent.StatusRunning},
+		{ID: "b", Status: agent.StatusRunning},
+		{ID: "c", Status: agent.StatusIdle},
+		{ID: "d", Status: agent.StatusDone},
+		{ID: "e", Status: agent.StatusError},
+	}
+	m := newWithClock(nodes, nil, nil, time.Time{})
+	parts := m.statusSummary()
+
+	want := []string{"2 running", "1 idle", "1 done", "1 error"}
+	if len(parts) != len(want) {
+		t.Fatalf("expected %d parts, got %d: %v", len(want), len(parts), parts)
+	}
+	for i, w := range want {
+		if parts[i] != w {
+			t.Errorf("parts[%d] = %q, want %q", i, parts[i], w)
+		}
+	}
+}
+
+func TestStatusSummary_ZeroBucketsOmitted(t *testing.T) {
+	nodes := []agent.Node{
+		{ID: "a", Status: agent.StatusRunning},
+	}
+	m := newWithClock(nodes, nil, nil, time.Time{})
+	parts := m.statusSummary()
+
+	if len(parts) != 1 || parts[0] != "1 running" {
+		t.Errorf("expected [1 running], got %v", parts)
+	}
+}
+
+func TestStatusSummary_EmptyTree(t *testing.T) {
+	m := newWithClock(nil, nil, nil, time.Time{})
+	parts := m.statusSummary()
+	if len(parts) != 0 {
+		t.Errorf("expected empty summary for empty tree, got %v", parts)
+	}
+}
+
+// --- Status summary appears in Agents header ---
+
+func TestView_StatusSummaryInHeader(t *testing.T) {
+	nodes := []agent.Node{
+		{ID: "a", Name: "agent-a", Status: agent.StatusRunning},
+		{ID: "b", Name: "agent-b", Status: agent.StatusDone},
+	}
+	m := newWithClock(nodes, nil, nil, time.Time{})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
+	view := next.(Model).View()
+
+	if !strings.Contains(view, "running") {
+		t.Errorf("expected 'running' in Agents header, got:\n%s", view)
+	}
+	if !strings.Contains(view, "done") {
+		t.Errorf("expected 'done' in Agents header, got:\n%s", view)
+	}
+}
+
+// --- Loop badge ---
+
+func TestLoopBadge_BelowThreshold(t *testing.T) {
+	n := &agent.Node{ConsecutiveTools: agent.LoopThreshold - 1}
+	if got := loopBadge(n); got != "" {
+		t.Errorf("expected empty badge below threshold, got %q", got)
+	}
+}
+
+func TestLoopBadge_AtThreshold(t *testing.T) {
+	n := &agent.Node{ConsecutiveTools: agent.LoopThreshold}
+	got := loopBadge(n)
+	if got == "" {
+		t.Errorf("expected non-empty loop badge at threshold")
+	}
+	if !strings.Contains(got, "⚠") {
+		t.Errorf("expected ⚠ in loop badge, got %q", got)
+	}
+}
+
+func TestView_LoopBadgeAppearsInAgentsPanel(t *testing.T) {
+	nodes := []agent.Node{
+		{
+			ID:               "a",
+			Name:             "loopy-agent",
+			Status:           agent.StatusRunning,
+			ConsecutiveTools: agent.LoopThreshold,
+		},
+	}
+	m := newWithClock(nodes, nil, nil, time.Time{})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
+	view := next.(Model).View()
+
+	if !strings.Contains(view, "⚠") {
+		t.Errorf("expected loop badge ⚠ in view for looping agent, got:\n%s", view)
+	}
+}
+
+func TestView_LoopBadgeSuppressesPills(t *testing.T) {
+	// When an agent is looping, the loop badge takes priority over pills.
+	nodes := []agent.Node{
+		{
+			ID:               "a",
+			Name:             "agent-a",
+			Status:           agent.StatusRunning,
+			Tools:            []string{"Bash"},
+			ConsecutiveTools: agent.LoopThreshold,
+		},
+	}
+	m := newWithClock(nodes, nil, nil, time.Time{})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
+	view := next.(Model).View()
+
+	if !strings.Contains(view, "⚠") {
+		t.Errorf("expected loop badge in view, got:\n%s", view)
+	}
+	// "bash" pill should not appear when the loop badge is shown (badge takes precedence).
+	if strings.Contains(view, "bash") {
+		t.Errorf("expected no tool pills when loop badge is shown, got:\n%s", view)
+	}
+}
+
+// --- Files tab ---
+
+func TestExtractFilePath_Valid(t *testing.T) {
+	path := extractFilePath(`{"file_path":"/tmp/foo.go","content":"bar"}`)
+	if path != "/tmp/foo.go" {
+		t.Errorf("expected /tmp/foo.go, got %q", path)
+	}
+}
+
+func TestExtractFilePath_Missing(t *testing.T) {
+	path := extractFilePath(`{"content":"bar"}`)
+	if path != "" {
+		t.Errorf("expected empty string, got %q", path)
+	}
+}
+
+func TestExtractFilePath_InvalidJSON(t *testing.T) {
+	path := extractFilePath(`not-json`)
+	if path != "" {
+		t.Errorf("expected empty string for invalid JSON, got %q", path)
+	}
+}
+
+func TestFileChangeTool_KnownTools(t *testing.T) {
+	cases := []struct {
+		tool string
+		op   string
+		ok   bool
+	}{
+		{"Write", "write", true},
+		{"Edit", "edit", true},
+		{"MultiEdit", "edit", true},
+		{"NotebookEdit", "notebook", true},
+		{"Bash", "", false},
+		{"Read", "", false},
+	}
+	for _, tc := range cases {
+		op, ok := fileChangeTool(tc.tool)
+		if ok != tc.ok || op != tc.op {
+			t.Errorf("fileChangeTool(%q) = (%q, %v), want (%q, %v)", tc.tool, op, ok, tc.op, tc.ok)
+		}
+	}
+}
+
+func TestAllFileChanges_CollectsFromAllNodes(t *testing.T) {
+	ts := time.Now()
+	nodes := []agent.Node{
+		{
+			ID:     "a",
+			Name:   "agent-a",
+			Status: agent.StatusDone,
+			Events: []agent.Event{
+				{Type: "PostToolUse", Tool: "Write", Input: `{"file_path":"/src/main.go"}`, Timestamp: ts},
+			},
+		},
+		{
+			ID:     "b",
+			Name:   "agent-b",
+			Status: agent.StatusDone,
+			Events: []agent.Event{
+				{Type: "PostToolUse", Tool: "Edit", Input: `{"file_path":"/src/util.go"}`, Timestamp: ts.Add(time.Second)},
+			},
+		},
+	}
+	m := newWithClock(nodes, nil, nil, time.Time{})
+	changes := m.allFileChanges()
+
+	if len(changes) != 2 {
+		t.Fatalf("expected 2 file changes, got %d", len(changes))
+	}
+}
+
+func TestAllFileChanges_SkipsNonFileEvents(t *testing.T) {
+	ts := time.Now()
+	nodes := []agent.Node{
+		{
+			ID:   "a",
+			Name: "agent-a",
+			Events: []agent.Event{
+				{Type: "PostToolUse", Tool: "Bash", Input: `{"command":"ls"}`, Timestamp: ts},
+				{Type: "PreToolUse", Tool: "Write", Input: `{"file_path":"/x.go"}`, Timestamp: ts},
+				{Type: "PostToolUse", Tool: "Write", Input: `{"file_path":"/y.go"}`, Timestamp: ts},
+			},
+		},
+	}
+	m := newWithClock(nodes, nil, nil, time.Time{})
+	changes := m.allFileChanges()
+
+	// Only the PostToolUse Write should be collected; Bash and PreToolUse are skipped.
+	if len(changes) != 1 {
+		t.Fatalf("expected 1 file change (only PostToolUse+Write), got %d", len(changes))
+	}
+	if changes[0].path != "/y.go" {
+		t.Errorf("expected /y.go, got %q", changes[0].path)
+	}
+}
+
+func TestFilesContent_ShowsFilenames(t *testing.T) {
+	ts := time.Now().Add(-30 * time.Second)
+	nodes := []agent.Node{
+		{
+			ID:     "a",
+			Name:   "agent-a",
+			Status: agent.StatusDone,
+			Events: []agent.Event{
+				{Type: "PostToolUse", Tool: "Write", Input: `{"file_path":"/project/main.go"}`, Timestamp: ts},
+			},
+		},
+	}
+	m := newWithClock(nodes, nil, nil, time.Time{})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m2 := next.(Model)
+	m2.activeRightTab = 1 // tabFiles
+	view := m2.View()
+
+	if !strings.Contains(view, "main.go") {
+		t.Errorf("expected 'main.go' in Files tab view, got:\n%s", view)
+	}
+}
+
+func TestFilesContent_EmptyMessage_WhenNoChanges(t *testing.T) {
+	nodes := []agent.Node{
+		{ID: "a", Name: "agent-a", Status: agent.StatusRunning, Events: []agent.Event{}},
+	}
+	m := newWithClock(nodes, nil, nil, time.Time{})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m2 := next.(Model)
+	m2.activeRightTab = 1 // tabFiles
+	content := m2.filesContent()
+
+	if !strings.Contains(content, "No file writes") {
+		t.Errorf("expected 'No file writes' message, got:\n%s", content)
+	}
+}
