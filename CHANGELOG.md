@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-05-25
+
+### Added
+- `orchard agents [--project PATH]`: lists registered Claude Code agent types from `~/.claude/settings.json` and local `.claude/settings.json`; shows name, description, and source (global/local)
+- `orchard skills [--project PATH]`: lists registered skills (slash commands) from settings.json; shows name, description, source
+- `internal/catalog` package: `Load(cwd)` reads agent types and skills from global and local settings files, deduplicates (local wins over global), and sorts alphabetically; `LoadFromHistory(sessionDir)` extracts observed agent types and skills from past JSONL files; 9 unit tests
+
 ## [1.4.0] - 2026-05-25
 
 ### Added

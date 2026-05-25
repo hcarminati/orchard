@@ -19,6 +19,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/hcarminati/orchard/internal/agent"
+	"github.com/hcarminati/orchard/internal/catalog"
 	"github.com/hcarminati/orchard/internal/config"
 	"github.com/hcarminati/orchard/internal/doctor"
 	"github.com/hcarminati/orchard/internal/history"
@@ -53,6 +54,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 			return runCancel(args[1:], stdout, stderr)
 		case "init":
 			return runInit(args[1:], stdout, stderr)
+		case "agents":
+			return runAgents(args[1:], stdout, stderr)
+		case "skills":
+			return runSkills(args[1:], stdout, stderr)
 		case "setup":
 			return runSetup(args[1:], stdout, stderr)
 		case "doctor":
@@ -402,6 +407,88 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 
 	if !doctor.AllPass(checks) {
 		return 1
+	}
+	return 0
+}
+
+// runAgents handles the `orchard agents` subcommand.
+// It lists registered Claude Code agent types from settings.json and past sessions.
+func runAgents(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("orchard agents", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	project := fs.String("project", "", "project working directory (default: current directory)")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	cwd := *project
+	if cwd == "" {
+		var err error
+		cwd, err = os.Getwd()
+		if err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return 1
+		}
+	}
+
+	cat, err := catalog.Load(cwd)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+
+	if len(cat.Agents) == 0 {
+		fmt.Fprintln(stdout, "no agent types found. Agent types are registered in ~/.claude/settings.json under 'agentTypes'.")
+		return 0
+	}
+
+	fmt.Fprintf(stdout, "Agent types (%d):\n\n", len(cat.Agents))
+	for _, a := range cat.Agents {
+		desc := a.Description
+		if desc == "" {
+			desc = "(no description)"
+		}
+		fmt.Fprintf(stdout, "  %-20s  %s  [%s]\n", a.Name, desc, a.Source)
+	}
+	return 0
+}
+
+// runSkills handles the `orchard skills` subcommand.
+// It lists registered skills (slash commands) from settings.json and past sessions.
+func runSkills(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("orchard skills", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	project := fs.String("project", "", "project working directory (default: current directory)")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	cwd := *project
+	if cwd == "" {
+		var err error
+		cwd, err = os.Getwd()
+		if err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return 1
+		}
+	}
+
+	cat, err := catalog.Load(cwd)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+
+	if len(cat.Skills) == 0 {
+		fmt.Fprintln(stdout, "no skills found. Skills are registered in ~/.claude/settings.json under 'skills'.")
+		return 0
+	}
+
+	fmt.Fprintf(stdout, "Skills (%d):\n\n", len(cat.Skills))
+	for _, s := range cat.Skills {
+		desc := s.Description
+		if desc == "" {
+			desc = "(no description)"
+		}
+		fmt.Fprintf(stdout, "  %-20s  %s  [%s]\n", s.Name, desc, s.Source)
 	}
 	return 0
 }
