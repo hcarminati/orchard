@@ -101,6 +101,10 @@ type Node struct {
 	Events    []Event
 	Usage     Usage // accumulated token counts across all events on this node
 
+	// ProjectDir is set when nodes are loaded in multi-watch mode to identify
+	// which project directory this session belongs to. Empty in single-project mode.
+	ProjectDir string
+
 	// Loop detection: tracks the last tool called and how many times in a row.
 	lastTool          string
 	consecutiveCount  int

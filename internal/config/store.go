@@ -134,3 +134,6 @@ func LoadHidden() (map[string]bool, error)   { return loadSet("hidden.json") }
 func SaveHidden(h map[string]bool) error     { return saveSet("hidden.json", h) }
 func LoadExpanded() (map[string]bool, error) { return loadSet("state.json") }
 func SaveExpanded(e map[string]bool) error   { return saveSet("state.json", e) }
+
+// DefaultConfigPath returns the path where config.toml should be written.
+func DefaultConfigPath() (string, error) { return configPath("config.toml") }
