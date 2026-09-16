@@ -21,7 +21,9 @@ import (
 	"github.com/hcarminati/orchard/internal/agent"
 	"github.com/hcarminati/orchard/internal/config"
 	"github.com/hcarminati/orchard/internal/doctor"
+	"github.com/hcarminati/orchard/internal/history"
 	"github.com/hcarminati/orchard/internal/hooks"
+	"github.com/hcarminati/orchard/internal/process"
 	"github.com/hcarminati/orchard/internal/replay"
 	"github.com/hcarminati/orchard/internal/session"
 	"github.com/hcarminati/orchard/internal/setup"
@@ -44,6 +46,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		switch args[0] {
 		case "replay":
 			return runReplay(args[1:], stdout, stderr)
+		case "history":
+			return runHistory(args[1:], stdout, stderr)
+		case "cancel":
+			return runCancel(args[1:], stdout, stderr)
 		case "setup":
 			return runSetup(args[1:], stdout, stderr)
 		case "doctor":
@@ -57,7 +63,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	showVersion := fs.Bool("version", false, "print version and exit")
 	demo := fs.Bool("demo", false, "populate with fake agents for local testing")
 	portStr := fs.String("port", "7070", "port for the Claude Code hook server")
-	project := fs.String("project", "", "override the project working directory (default: current directory)")
+	project := fs.String("project", "", "project working directory to watch (default: current directory; deprecated, use --watch)")
+	var watchPaths multiFlag
+	fs.Var(&watchPaths, "watch", "project directory to observe; repeat for multiple: --watch /a --watch /b")
 
 	if err := fs.Parse(args); err != nil {
 		// flag.ContinueOnError already wrote the error to stderr.
@@ -75,15 +83,35 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	// Determine which working directory to filter hook events for.
-	cwd := *project
-	if cwd == "" {
-		cwd, err = os.Getwd()
+	// Resolve the set of working directories to watch.
+	cwds := []string(watchPaths)
+	if *project != "" {
+		cwds = append(cwds, *project)
+	}
+	if len(cwds) == 0 {
+		var d string
+		d, err = os.Getwd()
 		if err != nil {
 			fmt.Fprintf(stderr, "error: could not determine working directory: %v\n", err)
 			return 1
 		}
+		cwds = []string{d}
 	}
+	// Deduplicate while preserving order.
+	{
+		seen := make(map[string]bool)
+		deduped := cwds[:0]
+		for _, c := range cwds {
+			if !seen[c] {
+				seen[c] = true
+				deduped = append(deduped, c)
+			}
+		}
+		cwds = deduped
+	}
+	// cwd is the primary working directory (first in the list), used for
+	// subagents root computation and single-project-mode features.
+	cwd := cwds[0]
 
 	// Load existing session data from ~/.claude/projects/ to hydrate the initial tree.
 	// Errors here are non-fatal: the TUI will show "waiting for session…" instead.
@@ -91,9 +119,19 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if *demo {
 		initialNodes = demoNodes()
 	} else {
-		initialNodes, err = session.Load(cwd)
-		if err != nil {
-			fmt.Fprintf(stderr, "warning: could not load session data: %v\n", err)
+		for _, c := range cwds {
+			nodes, lerr := session.Load(c)
+			if lerr != nil {
+				fmt.Fprintf(stderr, "warning: could not load session data for %s: %v\n", c, lerr)
+				continue
+			}
+			// Tag nodes with their project directory when watching multiple projects.
+			if len(cwds) > 1 {
+				for i := range nodes {
+					nodes[i].ProjectDir = c
+				}
+			}
+			initialNodes = append(initialNodes, nodes...)
 		}
 	}
 
@@ -135,7 +173,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	// so it must run in its own goroutine. http.ErrServerClosed is expected
 	// on clean shutdown and is not logged.
 	addr := fmt.Sprintf(":%d", port)
-	hookServer := hooks.NewServer(cwd, eventCh, addr)
+	hookServer := hooks.NewServer(cwds, eventCh, addr)
 	go func() {
 		if err := hookServer.Start(); err != nil && err != http.ErrServerClosed {
 			// Log to stderr but do not crash the TUI — the user can still use
@@ -168,6 +206,22 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+// multiFlag is a flag.Value that accumulates multiple --watch values into a slice.
+// Comma-separated values in a single flag invocation are also split, so
+// --watch a,b and --watch a --watch b are equivalent.
+type multiFlag []string
+
+func (f *multiFlag) String() string { return strings.Join(*f, ",") }
+func (f *multiFlag) Set(v string) error {
+	for _, s := range strings.Split(v, ",") {
+		s = strings.TrimSpace(s)
+		if s != "" {
+			*f = append(*f, s)
+		}
+	}
+	return nil
 }
 
 // parsePort validates that s is an integer in the valid TCP port range [1, 65535].
@@ -344,6 +398,170 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if !doctor.AllPass(checks) {
+		return 1
+	}
+	return 0
+}
+
+// runCancel handles the `orchard cancel` subcommand.
+// It discovers Claude Code processes for the project and sends SIGINT.
+func runCancel(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("orchard cancel", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.Usage = func() {
+		fmt.Fprintln(stderr, "usage: orchard cancel [--project PATH] [--dry-run]")
+		fmt.Fprintln(stderr, "")
+		fmt.Fprintln(stderr, "Cancels running Claude Code sessions for a project by sending SIGINT.")
+		fmt.Fprintln(stderr, "")
+		fmt.Fprintln(stderr, "flags:")
+		fs.PrintDefaults()
+	}
+
+	project := fs.String("project", "", "project working directory (default: current directory)")
+	dryRun := fs.Bool("dry-run", false, "show which processes would be cancelled without sending the signal")
+
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	cwd := *project
+	if cwd == "" {
+		var err error
+		cwd, err = os.Getwd()
+		if err != nil {
+			fmt.Fprintf(stderr, "error: could not determine working directory: %v\n", err)
+			return 1
+		}
+	}
+
+	procs, err := process.FindForCWD(cwd)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: could not discover processes: %v\n", err)
+		return 1
+	}
+
+	if len(procs) == 0 {
+		fmt.Fprintln(stdout, "no Claude Code processes found for this project.")
+		return 0
+	}
+
+	for _, p := range procs {
+		if *dryRun {
+			fmt.Fprintf(stdout, "would cancel: %s\n", p.String())
+			continue
+		}
+		if err := process.SendInterrupt(p.PID); err != nil {
+			fmt.Fprintf(stderr, "error cancelling %s: %v\n", p.String(), err)
+		} else {
+			fmt.Fprintf(stdout, "cancelled: %s\n", p.String())
+		}
+	}
+
+	return 0
+}
+
+// runHistory handles the `orchard history` subcommand.
+// It opens a TUI that lets the user browse, replay, or export past sessions.
+func runHistory(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("orchard history", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.Usage = func() {
+		fmt.Fprintln(stderr, "usage: orchard history [--project PATH]")
+		fmt.Fprintln(stderr, "")
+		fmt.Fprintln(stderr, "Browse past Claude Code sessions for a project.")
+		fmt.Fprintln(stderr, "")
+		fmt.Fprintln(stderr, "flags:")
+		fs.PrintDefaults()
+	}
+
+	project := fs.String("project", "", "project working directory (default: current directory)")
+
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	cwd := *project
+	if cwd == "" {
+		var err error
+		cwd, err = os.Getwd()
+		if err != nil {
+			fmt.Fprintf(stderr, "error: could not determine working directory: %v\n", err)
+			return 1
+		}
+	}
+
+	sessions, err := history.ListForCWD(cwd)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: could not list sessions: %v\n", err)
+		return 1
+	}
+	if len(sessions) == 0 {
+		fmt.Fprintln(stderr, "no past sessions found for this project.")
+		return 0
+	}
+
+	result, err := history.Run(sessions)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+
+	switch result.Action {
+	case history.ActionReplay:
+		return runReplaySession(result.Session, stdout, stderr)
+	case history.ActionExport:
+		return runExportSession(result.Session, stdout, stderr)
+	}
+	return 0
+}
+
+// runReplaySession replays a specific session selected from the history picker.
+func runReplaySession(s history.SessionMeta, stdout, stderr io.Writer) int {
+	nodes, err := session.LoadFile(s.File)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: could not load session file: %v\n", err)
+		return 1
+	}
+	if len(nodes) == 0 {
+		fmt.Fprintln(stderr, "error: session file contains no agent data.")
+		return 1
+	}
+
+	dur := replay.Duration(nodes)
+	fmt.Fprintf(stderr, "replaying session %s: %d agents, %s\n",
+		s.ID[:8], len(nodes), formatReplayDur(dur))
+
+	eventCh := make(chan agent.Event, 256)
+	done := make(chan struct{})
+	go func() {
+		replay.Run(nodes, eventCh, replay.Options{Speed: 1.0}, done)
+	}()
+
+	p := tea.NewProgram(
+		ui.New(nil, eventCh, "", nil, nil, 0, 0, 0, 0),
+		tea.WithAltScreen(),
+		tea.WithMouseCellMotion(),
+	)
+	if _, err := p.Run(); err != nil {
+		close(done)
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+	close(done)
+	return 0
+}
+
+// runExportSession exports a session's raw JSONL to stdout.
+func runExportSession(s history.SessionMeta, stdout, stderr io.Writer) int {
+	f, err := os.Open(s.File)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+	defer f.Close()
+
+	if _, err := io.Copy(stdout, f); err != nil {
+		fmt.Fprintf(stderr, "error writing export: %v\n", err)
 		return 1
 	}
 	return 0

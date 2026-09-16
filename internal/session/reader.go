@@ -185,6 +185,13 @@ func cwdToDir(cwd string) string {
 	return strings.ReplaceAll(cwd, "/", "-")
 }
 
+// LoadFile reads a single JSONL file and returns agent.Node values for every
+// unique session ID found in it. This is used by the history picker when the
+// user selects a specific session for replay.
+func LoadFile(path string) ([]agent.Node, error) {
+	return parseNodes(path)
+}
+
 // parseNodes reads a JSONL file and returns one node per unique session ID.
 // Tool-use events are extracted from assistant message content blocks and
 // attached to each node, so the events tab is populated on restart.

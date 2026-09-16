@@ -131,6 +131,45 @@ func TestRunSetup_Verify(t *testing.T) {
 	}
 }
 
+func TestMultiFlag_SingleValue(t *testing.T) {
+	var f multiFlag
+	if err := f.Set("/foo"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(f) != 1 || f[0] != "/foo" {
+		t.Errorf("got %v, want [/foo]", []string(f))
+	}
+}
+
+func TestMultiFlag_CommaSeparated(t *testing.T) {
+	var f multiFlag
+	if err := f.Set("/foo,/bar"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(f) != 2 || f[0] != "/foo" || f[1] != "/bar" {
+		t.Errorf("got %v, want [/foo /bar]", []string(f))
+	}
+}
+
+func TestMultiFlag_RepeatedCalls(t *testing.T) {
+	var f multiFlag
+	_ = f.Set("/a")
+	_ = f.Set("/b")
+	if len(f) != 2 || f[0] != "/a" || f[1] != "/b" {
+		t.Errorf("got %v, want [/a /b]", []string(f))
+	}
+}
+
+func TestMultiFlag_EmptyStringIgnored(t *testing.T) {
+	var f multiFlag
+	if err := f.Set(",/a,,/b,"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(f) != 2 {
+		t.Errorf("got %v, want [/a /b]", []string(f))
+	}
+}
+
 func TestRunInvalidPort(t *testing.T) {
 	tests := []struct {
 		port string

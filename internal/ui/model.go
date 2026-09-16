@@ -198,6 +198,7 @@ type Model struct {
 	costAlertDismiss map[string]bool // session IDs where the cost alert has been dismissed
 	bellSent         map[string]bool // session IDs where the terminal bell has already fired
 	helpOpen         bool            // whether the full-screen help overlay is visible
+	cancelOpen       bool            // whether the cancel-agent overlay is visible
 }
 
 // autoHideAge is how long a session must be inactive before it is automatically
@@ -753,6 +754,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		// Cancel overlay intercepts all keys while open.
+		if m.cancelOpen {
+			switch msg.String() {
+			case "esc", "q", "X":
+				m.cancelOpen = false
+			}
+			return m, nil
+		}
 		// Search bar intercepts all keys while open.
 		if m.searchOpen {
 			switch msg.String() {
@@ -795,6 +804,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "?":
 			m.helpOpen = true
+			return m, nil
+		case "X":
+			m.cancelOpen = true
 			return m, nil
 		case "q", "ctrl+c":
 			return m, tea.Quit
@@ -1222,7 +1234,9 @@ func (m Model) View() string {
 	body := m.renderBody(bodyH)
 	footer := m.renderFooter()
 
-	if m.helpOpen {
+	if m.cancelOpen {
+		body = overlayCenter(dimBody(body), m.renderCancelOverlay(), m.width, bodyH)
+	} else if m.helpOpen {
 		body = overlayCenter(dimBody(body), m.renderHelpOverlay(bodyH), m.width, bodyH)
 	} else if m.modalOpen {
 		body = overlayCenter(dimBody(body), m.renderDetailModal(bodyH), m.width, bodyH)

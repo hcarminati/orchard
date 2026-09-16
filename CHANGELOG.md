@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-05-25
+
+### Added
+- `orchard cancel [--project PATH] [--dry-run]`: discovers running Claude Code processes for the project via `ps` + `lsof` and sends SIGINT; `--dry-run` prints which PIDs would be cancelled without acting
+- `X` key in TUI: opens a cancel overlay showing the focused session name, SIGINT command, and how to use the `orchard cancel` subcommand; `esc` or `X` closes it
+- `internal/process` package: `FindForCWD(cwd)` discovers Claude Code processes by CWD, `SendInterrupt(pid)` sends SIGINT; tested for graceful handling of missing/non-existent processes
+
+## [1.2.0] - 2026-05-25
+
+### Added
+- `--watch PATH` flag: repeat to observe multiple project directories simultaneously — `orchard --watch /proj/a --watch /proj/b`; comma-separated values also accepted
+- Hook server now accepts events from all watched directories instead of a single CWD
+- Root session nodes in the Agents panel show a muted `[projectname]` prefix badge when multiple projects are loaded, so sessions from different repos are clearly distinguished
+- `session.Load` called once per watched directory at startup; nodes are tagged with `Node.ProjectDir` in multi-watch mode
+
+## [1.1.0] - 2026-05-25
+
+### Added
+- `orchard history [--project PATH]`: interactive TUI that lists all past Claude Code sessions for a project, sorted newest-first; each row shows date, duration, event count, and first user prompt snippet
+- Browse with `j`/`k` or arrow keys; press `enter` to replay any session through the standard TUI; press `e` to export the raw JSONL to stdout; `q` quits
+- `internal/history` package: `List(dir)`, `ListForCWD(cwd)`, `SessionMeta` struct with ID, File, StartTime, EndTime, EventCount, Snippet fields
+- `session.LoadFile(path)`: new exported function for loading a specific JSONL file (used by history-to-replay handoff)
+
 ## [1.0.0] - 2026-05-25
 
 ### Added
