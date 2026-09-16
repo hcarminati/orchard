@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gh repo:*)",
+      "Bash(git remote:*)",
+      "Bash(gh issue:*)",
+      "Read(//Users/heathercarminati1/orchard/$HOME/.claude/projects/-Users-heathercarminati1-orchard/be12c427-92bc-4d34-ac23-970ed57211b8/subagents/**)",
+      "Read(//Users/heathercarminati1/orchard/$HOME/.claude/projects/-Users-heathercarminati1-orchard/93ddaa97-d9fe-4f29-afc5-953d4a4fa2a7/subagents/**)"
+    ]
+  }
+}

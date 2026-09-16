@@ -53,6 +53,23 @@ func TestAddNode_MultipleRoots(t *testing.T) {
 	}
 }
 
+func TestAddNode_Idempotent(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "parent"})
+	tree.AddNode(Node{ID: "child", ParentID: "parent"})
+	// Adding the same child again must not duplicate the entry in parent.Children
+	// or in tree.Nodes.
+	tree.AddNode(Node{ID: "child", ParentID: "parent"})
+
+	parent := tree.Nodes["parent"]
+	if len(parent.Children) != 1 {
+		t.Errorf("expected parent to have 1 child after duplicate AddNode, got %d", len(parent.Children))
+	}
+	if len(tree.Roots) != 1 {
+		t.Errorf("expected 1 root, got %d: %v", len(tree.Roots), tree.Roots)
+	}
+}
+
 func TestApplyEvent_CreatesNodeWhenMissing(t *testing.T) {
 	tree := NewTree()
 	e := Event{
@@ -116,8 +133,125 @@ func TestApplyEvent_SubagentStopSetsIdle(t *testing.T) {
 	tree.AddNode(Node{ID: "s1", Status: StatusRunning})
 	tree.ApplyEvent(Event{Type: "SubagentStop", SessionID: "s1", Timestamp: time.Now()})
 
+	// SubagentStop fires under the parent's session_id (not the subagent's),
+	// so it returns the parent to Idle — not Done. The Stop handler's child-sweep
+	// already marks the subagent placeholder Done.
 	if tree.Nodes["s1"].Status != StatusIdle {
 		t.Errorf("expected StatusIdle after SubagentStop, got %d", tree.Nodes["s1"].Status)
+	}
+}
+
+func TestApplyEvent_WithParentID_AttachesChildToParent(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "parent", Status: StatusRunning})
+
+	// A new session arrives with parent_session_id pointing to "parent".
+	tree.ApplyEvent(Event{
+		Type:      "PreToolUse",
+		SessionID: "child",
+		ParentID:  "parent",
+		Tool:      "Bash",
+		Timestamp: time.Now(),
+	})
+
+	child := tree.Nodes["child"]
+	if child == nil {
+		t.Fatal("expected child node to be created")
+	}
+	if child.ParentID != "parent" {
+		t.Errorf("expected child.ParentID = 'parent', got %q", child.ParentID)
+	}
+
+	// Child must not appear in Roots.
+	for _, r := range tree.Roots {
+		if r == "child" {
+			t.Error("child node should not be in Roots when parent exists")
+		}
+	}
+
+	// Parent's Children slice must include the child.
+	parent := tree.Nodes["parent"]
+	if len(parent.Children) != 1 || parent.Children[0] != "child" {
+		t.Errorf("expected parent.Children = [child], got %v", parent.Children)
+	}
+}
+
+func TestApplyEvent_WithParentID_ParentNotYetInTree_SurfacesAsRoot(t *testing.T) {
+	tree := NewTree()
+
+	// Child event arrives before any parent event.
+	tree.ApplyEvent(Event{
+		Type:      "PreToolUse",
+		SessionID: "child",
+		ParentID:  "unknown-parent",
+		Tool:      "Bash",
+		Timestamp: time.Now(),
+	})
+
+	child := tree.Nodes["child"]
+	if child == nil {
+		t.Fatal("expected child node to be created")
+	}
+	// Should be visible as a root rather than disappearing.
+	found := false
+	for _, r := range tree.Roots {
+		if r == "child" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected orphaned child to appear in Roots")
+	}
+}
+
+func TestApplyEvent_SubagentLiveEvents_ClaimPlaceholderNode(t *testing.T) {
+	tree := NewTree()
+
+	// Parent session starts.
+	tree.ApplyEvent(Event{Type: "Notification", SessionID: "parent", Timestamp: time.Now()})
+
+	// Parent spawns a subagent via the Agent tool — placeholder node created under tool_use_id.
+	tree.ApplyEvent(Event{
+		Type:      "PreToolUse",
+		SessionID: "parent",
+		Tool:      "Agent",
+		ToolUseID: "toolu_abc",
+		Input:     `{"subagent_type":"general-purpose","prompt":"do something"}`,
+		Timestamp: time.Now(),
+	})
+
+	placeholder := tree.Nodes["toolu_abc"]
+	if placeholder == nil {
+		t.Fatal("expected placeholder node at tool_use_id")
+	}
+
+	// Live hook event arrives from the subagent's real session.
+	tree.ApplyEvent(Event{
+		Type:      "PreToolUse",
+		SessionID: "agent-real-id",
+		ParentID:  "parent",
+		Tool:      "Read",
+		Input:     `{"file_path":"/foo.go"}`,
+		Timestamp: time.Now(),
+	})
+
+	// No new node should have been created — the real session is aliased to the placeholder.
+	if _, ok := tree.Nodes["agent-real-id"]; ok {
+		t.Error("expected no separate node for real session ID — should reuse placeholder")
+	}
+
+	// The placeholder node should carry only its own events (not the parent's spawn event).
+	if len(placeholder.Events) != 1 {
+		t.Fatalf("expected 1 event on placeholder (Read only), got %d", len(placeholder.Events))
+	}
+	if placeholder.Events[0].Tool != "Read" {
+		t.Errorf("expected first event Tool = 'Read', got %q", placeholder.Events[0].Tool)
+	}
+
+	// Parent should still have only one child (the placeholder, not a duplicate).
+	parent := tree.Nodes["parent"]
+	if len(parent.Children) != 1 {
+		t.Errorf("expected parent to have 1 child, got %d: %v", len(parent.Children), parent.Children)
 	}
 }
 
@@ -259,6 +393,301 @@ func TestApplyEvent_ErrorOnNewNode(t *testing.T) {
 	}
 }
 
+func TestApplyEvent_AgentTool_CreatesChildNodeImmediately(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "parent", Status: StatusRunning})
+
+	tree.ApplyEvent(Event{
+		Type:      "PreToolUse",
+		SessionID: "parent",
+		Tool:      "Agent",
+		ToolUseID: "toolu_001",
+		Input:     `{"subagent_type":"Explore","prompt":"find stuff"}`,
+		Timestamp: time.Now(),
+	})
+
+	// Child node should be created immediately using tool_use_id as its ID.
+	child := tree.Nodes["toolu_001"]
+	if child == nil {
+		t.Fatal("expected child node to be created immediately on PreToolUse[Agent]")
+	}
+	if child.Name != "Explore" {
+		t.Errorf("expected child Name 'Explore', got %q", child.Name)
+	}
+	if child.Status != StatusRunning {
+		t.Errorf("expected child StatusRunning, got %d", child.Status)
+	}
+	if child.ParentID != "parent" {
+		t.Errorf("expected child ParentID 'parent', got %q", child.ParentID)
+	}
+
+	// Child must appear in parent's Children slice.
+	parent := tree.Nodes["parent"]
+	if len(parent.Children) != 1 || parent.Children[0] != "toolu_001" {
+		t.Errorf("expected parent.Children = [toolu_001], got %v", parent.Children)
+	}
+}
+
+func TestApplyEvent_AgentTool_MultipleChildrenParallel(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "parent", Status: StatusRunning})
+
+	tree.ApplyEvent(Event{
+		Type: "PreToolUse", SessionID: "parent", Tool: "Agent",
+		ToolUseID: "toolu_A", Input: `{"subagent_type":"Explore"}`,
+		Timestamp: time.Now(),
+	})
+	tree.ApplyEvent(Event{
+		Type: "PreToolUse", SessionID: "parent", Tool: "Agent",
+		ToolUseID: "toolu_B", Input: `{"subagent_type":"Plan"}`,
+		Timestamp: time.Now(),
+	})
+
+	if tree.Nodes["toolu_A"] == nil || tree.Nodes["toolu_A"].Name != "Explore" {
+		t.Errorf("expected toolu_A named 'Explore', got %+v", tree.Nodes["toolu_A"])
+	}
+	if tree.Nodes["toolu_B"] == nil || tree.Nodes["toolu_B"].Name != "Plan" {
+		t.Errorf("expected toolu_B named 'Plan', got %+v", tree.Nodes["toolu_B"])
+	}
+
+	parent := tree.Nodes["parent"]
+	if len(parent.Children) != 2 {
+		t.Errorf("expected 2 children, got %d", len(parent.Children))
+	}
+}
+
+func TestApplyEvent_AgentTool_NoSubagentType_FallsBackToAgentName(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "parent", Status: StatusRunning})
+
+	tree.ApplyEvent(Event{
+		Type:      "PreToolUse",
+		SessionID: "parent",
+		Tool:      "Agent",
+		ToolUseID: "toolu_X",
+		Input:     `{"prompt":"do something"}`,
+		Timestamp: time.Now(),
+	})
+
+	child := tree.Nodes["toolu_X"]
+	if child == nil {
+		t.Fatal("expected child node even without subagent_type")
+	}
+	if child.Name != "agent" {
+		t.Errorf("expected fallback name 'agent', got %q", child.Name)
+	}
+}
+
+func TestApplyEvent_AgentTool_NoToolUseID_NoChildCreated(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "parent", Status: StatusRunning})
+
+	// Agent call without a tool_use_id — should not crash or create orphan node.
+	tree.ApplyEvent(Event{
+		Type:      "PreToolUse",
+		SessionID: "parent",
+		Tool:      "Agent",
+		ToolUseID: "",
+		Input:     `{"subagent_type":"Explore"}`,
+		Timestamp: time.Now(),
+	})
+
+	parent := tree.Nodes["parent"]
+	if len(parent.Children) != 0 {
+		t.Errorf("expected no children when tool_use_id is empty, got %d", len(parent.Children))
+	}
+}
+
+func TestApplyEvent_Stop_MarksRunningChildrenDone(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "parent", Status: StatusRunning})
+
+	// Two subagents spawned.
+	tree.ApplyEvent(Event{
+		Type: "PreToolUse", SessionID: "parent", Tool: "Agent",
+		ToolUseID: "toolu_1", Input: `{"subagent_type":"Explore"}`,
+		Timestamp: time.Now(),
+	})
+	tree.ApplyEvent(Event{
+		Type: "PreToolUse", SessionID: "parent", Tool: "Agent",
+		ToolUseID: "toolu_2", Input: `{"subagent_type":"Plan"}`,
+		Timestamp: time.Now(),
+	})
+
+	// Turn ends.
+	tree.ApplyEvent(Event{Type: "Stop", SessionID: "parent", Timestamp: time.Now()})
+
+	if tree.Nodes["toolu_1"].Status != StatusDone {
+		t.Errorf("expected toolu_1 StatusDone after parent Stop, got %d", tree.Nodes["toolu_1"].Status)
+	}
+	if tree.Nodes["toolu_2"].Status != StatusDone {
+		t.Errorf("expected toolu_2 StatusDone after parent Stop, got %d", tree.Nodes["toolu_2"].Status)
+	}
+}
+
+func TestApplyEvent_NotificationDoesNotChangeStatus(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "s1", Status: StatusRunning})
+	tree.ApplyEvent(Event{Type: "Notification", SessionID: "s1", Message: "you have a message", Timestamp: time.Now()})
+
+	node := tree.Nodes["s1"]
+	if node.Status != StatusRunning {
+		t.Errorf("expected StatusRunning unchanged after Notification, got %d", node.Status)
+	}
+	if len(node.Events) != 1 {
+		t.Errorf("expected 1 event appended, got %d", len(node.Events))
+	}
+	if node.Events[0].Message != "you have a message" {
+		t.Errorf("expected event Message preserved, got %q", node.Events[0].Message)
+	}
+}
+
+func TestApplyEvent_PermissionRequestDoesNotChangeStatus(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "s1", Status: StatusRunning})
+	tree.ApplyEvent(Event{Type: "PermissionRequest", SessionID: "s1", Tool: "Bash", Timestamp: time.Now()})
+
+	node := tree.Nodes["s1"]
+	if node.Status != StatusRunning {
+		t.Errorf("expected StatusRunning unchanged after PermissionRequest, got %d", node.Status)
+	}
+	if len(node.Events) != 1 {
+		t.Errorf("expected 1 event appended, got %d", len(node.Events))
+	}
+}
+
+func TestApplyEvent_AgentTool_SpawnedChildHasSpawnEvent(t *testing.T) {
+	tree := NewTree()
+	tree.ApplyEvent(Event{
+		Type:      "PreToolUse",
+		SessionID: "parent",
+		Tool:      "Agent",
+		ToolUseID: "tool-use-1",
+		Input:     `{"subagent_type":"general-purpose","prompt":"do something"}`,
+		Timestamp: time.Now(),
+	})
+
+	child := tree.Nodes["tool-use-1"]
+	if child == nil {
+		t.Fatal("expected child node to be created for Agent tool call")
+	}
+	// Child starts empty — the spawn PreToolUse belongs to the parent, not the child.
+	if len(child.Events) != 0 {
+		t.Fatalf("expected child to start with 0 events (spawn event stays on parent), got %d", len(child.Events))
+	}
+	// The spawn event must be on the parent node.
+	parent := tree.Nodes["parent"]
+	if parent == nil {
+		t.Fatal("expected parent node to exist")
+	}
+	if len(parent.Events) != 1 || parent.Events[0].Tool != "Agent" {
+		t.Errorf("expected parent to have 1 Agent event, got %d events", len(parent.Events))
+	}
+}
+
+func TestApplyEvent_SubagentToolsReroutedFromParent(t *testing.T) {
+	// Claude Code fires subagent tool events with the parent's session_id.
+	// ApplyEvent should re-route them to the active subagent placeholder so
+	// they don't appear in the parent's event list.
+	tree := NewTree()
+
+	// Parent spawns a subagent.
+	tree.ApplyEvent(Event{
+		Type:      "PreToolUse",
+		SessionID: "parent",
+		Tool:      "Agent",
+		ToolUseID: "toolu_sub",
+	})
+
+	// Subagent's Read call arrives under the parent's session_id (Claude Code behaviour).
+	tree.ApplyEvent(Event{
+		Type:      "PreToolUse",
+		SessionID: "parent",
+		Tool:      "Read",
+		Input:     `{"file_path":"/foo.go"}`,
+	})
+
+	parent := tree.Nodes["parent"]
+	subagent := tree.Nodes["toolu_sub"]
+
+	if parent == nil || subagent == nil {
+		t.Fatal("expected both parent and subagent nodes to exist")
+	}
+	// Parent should only have the Agent spawn event.
+	if len(parent.Events) != 1 || parent.Events[0].Tool != "Agent" {
+		t.Errorf("expected parent to have 1 Agent event, got %d: %v", len(parent.Events), parent.Events)
+	}
+	// Subagent should have the re-routed Read event.
+	if len(subagent.Events) != 1 || subagent.Events[0].Tool != "Read" {
+		t.Errorf("expected subagent to have 1 Read event, got %d: %v", len(subagent.Events), subagent.Events)
+	}
+}
+
+func TestApplyEvent_DelegationClearedOnPostToolUseAgent(t *testing.T) {
+	// After PostToolUse[Agent], subsequent tool events on the parent stay in
+	// the parent — the subagent turn is over.
+	tree := NewTree()
+
+	tree.ApplyEvent(Event{Type: "PreToolUse", SessionID: "parent", Tool: "Agent", ToolUseID: "toolu_sub"})
+	tree.ApplyEvent(Event{Type: "PostToolUse", SessionID: "parent", Tool: "Agent"})
+
+	// Now a Bash event on the parent belongs to the parent again.
+	tree.ApplyEvent(Event{Type: "PreToolUse", SessionID: "parent", Tool: "Bash"})
+
+	parent := tree.Nodes["parent"]
+	if parent == nil {
+		t.Fatal("expected parent node")
+	}
+	tools := make([]string, 0, len(parent.Events))
+	for _, e := range parent.Events {
+		tools = append(tools, e.Tool)
+	}
+	// Expect: Agent, PostToolUse(Agent), Bash — all three on parent.
+	if len(parent.Events) != 3 {
+		t.Errorf("expected 3 events on parent after delegation cleared, got %d: %v", len(parent.Events), tools)
+	}
+}
+
+func TestSessionAlias_ReturnsFalseWhenNotSet(t *testing.T) {
+	tree := NewTree()
+	_, ok := tree.SessionAlias("no-such-id")
+	if ok {
+		t.Error("expected no alias for unknown session ID")
+	}
+}
+
+func TestSessionAlias_ReturnsPlaceholderAfterClaim(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "parent", Status: StatusRunning})
+
+	// Parent spawns a subagent — placeholder is created under tool_use_id.
+	tree.ApplyEvent(Event{
+		Type:      "PreToolUse",
+		SessionID: "parent",
+		Tool:      "Agent",
+		ToolUseID: "toolu_placeholder",
+		Input:     `{"subagent_type":"Explore"}`,
+		Timestamp: time.Now(),
+	})
+
+	// Real subagent arrives — triggers alias registration in ApplyEvent.
+	tree.ApplyEvent(Event{
+		Type:      "PreToolUse",
+		SessionID: "real-session-id",
+		ParentID:  "parent",
+		Tool:      "Read",
+		Timestamp: time.Now(),
+	})
+
+	got, ok := tree.SessionAlias("real-session-id")
+	if !ok {
+		t.Fatal("expected alias to be registered for real-session-id")
+	}
+	if got != "toolu_placeholder" {
+		t.Errorf("expected alias 'toolu_placeholder', got %q", got)
+	}
+}
+
 func TestNodeFields_ModelToolsSkillsPrompt(t *testing.T) {
 	n := NewNode("x")
 	n.Model = ModelSonnet
@@ -277,5 +706,321 @@ func TestNodeFields_ModelToolsSkillsPrompt(t *testing.T) {
 	}
 	if n.Prompt != "do the thing" {
 		t.Errorf("unexpected Prompt: %q", n.Prompt)
+	}
+}
+
+func TestParseModel(t *testing.T) {
+	tests := []struct {
+		input string
+		want  Model
+	}{
+		{"claude-haiku-4-5-20251001", ModelHaiku},
+		{"claude-haiku-3-5", ModelHaiku},
+		{"claude-sonnet-4-6", ModelSonnet},
+		{"claude-sonnet-3-7", ModelSonnet},
+		{"claude-opus-4-6", ModelOpus},
+		{"claude-opus-4", ModelOpus},
+		{"", ModelUnknown},
+		// Unknown model names are passed through as-is.
+		{"some-future-model", Model("some-future-model")},
+		// Case-insensitive matching.
+		{"CLAUDE-HAIKU", ModelHaiku},
+		{"Claude-Opus-4", ModelOpus},
+	}
+	for _, tc := range tests {
+		got := ParseModel(tc.input)
+		if got != tc.want {
+			t.Errorf("ParseModel(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestApplyEvent_SetsModelOnNode(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "s1", Status: StatusRunning})
+
+	tree.ApplyEvent(Event{
+		Type:      "PreToolUse",
+		SessionID: "s1",
+		Tool:      "Bash",
+		Model:     ModelSonnet,
+		Timestamp: time.Now(),
+	})
+
+	node := tree.Nodes["s1"]
+	if node.Model != ModelSonnet {
+		t.Errorf("expected node.Model = ModelSonnet, got %q", node.Model)
+	}
+}
+
+func TestApplyEvent_ModelUpdatesOnSubsequentEvents(t *testing.T) {
+	// Model can be updated by later events — last non-unknown wins.
+	tree := NewTree()
+	tree.AddNode(Node{ID: "s1", Status: StatusRunning})
+
+	tree.ApplyEvent(Event{Type: "PreToolUse", SessionID: "s1", Model: ModelHaiku, Timestamp: time.Now()})
+	tree.ApplyEvent(Event{Type: "PreToolUse", SessionID: "s1", Model: ModelSonnet, Timestamp: time.Now()})
+
+	if tree.Nodes["s1"].Model != ModelSonnet {
+		t.Errorf("expected model updated to ModelSonnet, got %q", tree.Nodes["s1"].Model)
+	}
+}
+
+func TestApplyEvent_ModelUnknownDoesNotOverwrite(t *testing.T) {
+	// An event with no model should not clear a previously set model.
+	tree := NewTree()
+	tree.AddNode(Node{ID: "s1", Status: StatusRunning, Model: ModelOpus})
+
+	tree.ApplyEvent(Event{Type: "PreToolUse", SessionID: "s1", Model: ModelUnknown, Timestamp: time.Now()})
+
+	if tree.Nodes["s1"].Model != ModelOpus {
+		t.Errorf("expected model to remain ModelOpus, got %q", tree.Nodes["s1"].Model)
+	}
+}
+
+func TestUsage_Add(t *testing.T) {
+	u := Usage{InputTokens: 100, OutputTokens: 50}
+	u.Add(Usage{InputTokens: 200, OutputTokens: 30, CacheReadInputTokens: 10})
+	if u.InputTokens != 300 {
+		t.Errorf("InputTokens: got %d, want 300", u.InputTokens)
+	}
+	if u.OutputTokens != 80 {
+		t.Errorf("OutputTokens: got %d, want 80", u.OutputTokens)
+	}
+	if u.CacheReadInputTokens != 10 {
+		t.Errorf("CacheReadInputTokens: got %d, want 10", u.CacheReadInputTokens)
+	}
+}
+
+func TestUsage_IsZero(t *testing.T) {
+	if !(Usage{}).IsZero() {
+		t.Error("empty Usage should be zero")
+	}
+	if (Usage{InputTokens: 1}).IsZero() {
+		t.Error("Usage with InputTokens should not be zero")
+	}
+}
+
+func TestApplyEvent_TokenUsage_AccumulatesOnNode(t *testing.T) {
+	// Each JSONL message carries per-turn counts; they are summed to get the total.
+	tree := NewTree()
+	tree.AddNode(Node{ID: "s1", Status: StatusRunning})
+
+	tree.ApplyEvent(Event{
+		Type:      "TokenUsage",
+		SessionID: "s1",
+		Usage:     Usage{InputTokens: 1000, OutputTokens: 200},
+	})
+	tree.ApplyEvent(Event{
+		Type:      "TokenUsage",
+		SessionID: "s1",
+		Usage:     Usage{InputTokens: 500, OutputTokens: 100, CacheReadInputTokens: 300},
+	})
+
+	node := tree.Nodes["s1"]
+	if node.Usage.InputTokens != 1500 {
+		t.Errorf("InputTokens: got %d, want 1500", node.Usage.InputTokens)
+	}
+	if node.Usage.OutputTokens != 300 {
+		t.Errorf("OutputTokens: got %d, want 300", node.Usage.OutputTokens)
+	}
+	if node.Usage.CacheReadInputTokens != 300 {
+		t.Errorf("CacheReadInputTokens: got %d, want 300", node.Usage.CacheReadInputTokens)
+	}
+}
+
+func TestApplyEvent_TokenUsage_DoesNotChangeStatus(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "s1", Status: StatusIdle})
+
+	tree.ApplyEvent(Event{
+		Type:      "TokenUsage",
+		SessionID: "s1",
+		Usage:     Usage{InputTokens: 100},
+	})
+
+	if tree.Nodes["s1"].Status != StatusIdle {
+		t.Errorf("expected status unchanged after TokenUsage event, got %d", tree.Nodes["s1"].Status)
+	}
+}
+
+func TestTotalUsage_SingleNode(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "root", Usage: Usage{InputTokens: 500, OutputTokens: 100}})
+
+	total := tree.TotalUsage("root")
+	if total.InputTokens != 500 || total.OutputTokens != 100 {
+		t.Errorf("TotalUsage: got %+v, want {500 100 0 0}", total)
+	}
+}
+
+func TestTotalUsage_RecursiveChildren(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "root", Usage: Usage{InputTokens: 1000, OutputTokens: 200}})
+	tree.AddNode(Node{ID: "child1", ParentID: "root", Usage: Usage{InputTokens: 300, OutputTokens: 50}})
+	tree.AddNode(Node{ID: "child2", ParentID: "root", Usage: Usage{InputTokens: 200, OutputTokens: 30}})
+
+	total := tree.TotalUsage("root")
+	if total.InputTokens != 1500 {
+		t.Errorf("InputTokens: got %d, want 1500", total.InputTokens)
+	}
+	if total.OutputTokens != 280 {
+		t.Errorf("OutputTokens: got %d, want 280", total.OutputTokens)
+	}
+}
+
+func TestTotalUsage_UnknownNode(t *testing.T) {
+	tree := NewTree()
+	u := tree.TotalUsage("no-such-node")
+	if !u.IsZero() {
+		t.Errorf("expected zero usage for unknown node, got %+v", u)
+	}
+}
+
+// --- appendUnique ---
+
+func TestAppendUnique_AddsNew(t *testing.T) {
+	s := appendUnique([]string{"Bash", "Read"}, "Write")
+	if len(s) != 3 || s[2] != "Write" {
+		t.Errorf("expected [Bash Read Write], got %v", s)
+	}
+}
+
+func TestAppendUnique_SkipsDuplicate(t *testing.T) {
+	s := appendUnique([]string{"Bash", "Read"}, "Bash")
+	if len(s) != 2 {
+		t.Errorf("expected no change on duplicate, got %v", s)
+	}
+}
+
+func TestAppendUnique_EmptySlice(t *testing.T) {
+	s := appendUnique(nil, "Bash")
+	if len(s) != 1 || s[0] != "Bash" {
+		t.Errorf("expected [Bash], got %v", s)
+	}
+}
+
+// --- Tools and Skills populated from events ---
+
+func TestApplyEvent_PopulatesTools(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "s1", Tools: []string{}, Skills: []string{}})
+
+	tree.ApplyEvent(Event{Type: "PreToolUse", SessionID: "s1", Tool: "Bash", Timestamp: time.Now()})
+	tree.ApplyEvent(Event{Type: "PreToolUse", SessionID: "s1", Tool: "Read", Timestamp: time.Now()})
+	// Duplicate — should not be added again.
+	tree.ApplyEvent(Event{Type: "PreToolUse", SessionID: "s1", Tool: "Bash", Timestamp: time.Now()})
+
+	n := tree.Nodes["s1"]
+	if len(n.Tools) != 2 {
+		t.Errorf("expected 2 deduplicated tools, got %d: %v", len(n.Tools), n.Tools)
+	}
+	if n.Tools[0] != "Bash" || n.Tools[1] != "Read" {
+		t.Errorf("unexpected tools order: %v", n.Tools)
+	}
+}
+
+func TestApplyEvent_DoesNotAddAgentToTools(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "s1", Tools: []string{}, Skills: []string{}})
+
+	tree.ApplyEvent(Event{Type: "PreToolUse", SessionID: "s1", Tool: "Agent", ToolUseID: "tu1", Timestamp: time.Now()})
+
+	n := tree.Nodes["s1"]
+	if len(n.Tools) != 0 {
+		t.Errorf("Agent tool should not be added to Tools slice, got %v", n.Tools)
+	}
+}
+
+func TestApplyEvent_PopulatesSkills(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "s1", Tools: []string{}, Skills: []string{}})
+
+	tree.ApplyEvent(Event{Type: "SkillTrigger", SessionID: "s1", Tool: "commit", Timestamp: time.Now()})
+	tree.ApplyEvent(Event{Type: "SkillTrigger", SessionID: "s1", Tool: "build", Timestamp: time.Now()})
+	// Duplicate.
+	tree.ApplyEvent(Event{Type: "SkillTrigger", SessionID: "s1", Tool: "commit", Timestamp: time.Now()})
+
+	n := tree.Nodes["s1"]
+	if len(n.Skills) != 2 {
+		t.Errorf("expected 2 deduplicated skills, got %d: %v", len(n.Skills), n.Skills)
+	}
+}
+
+func TestApplyEvent_ToolsAndSkillsIndependent(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "s1", Tools: []string{}, Skills: []string{}})
+
+	tree.ApplyEvent(Event{Type: "PreToolUse", SessionID: "s1", Tool: "Bash", Timestamp: time.Now()})
+	tree.ApplyEvent(Event{Type: "SkillTrigger", SessionID: "s1", Tool: "Bash", Timestamp: time.Now()})
+
+	n := tree.Nodes["s1"]
+	if len(n.Tools) != 1 || n.Tools[0] != "Bash" {
+		t.Errorf("expected Tools=[Bash], got %v", n.Tools)
+	}
+	if len(n.Skills) != 1 || n.Skills[0] != "Bash" {
+		t.Errorf("expected Skills=[Bash], got %v", n.Skills)
+	}
+}
+
+// --- Loop detection ---
+
+func TestApplyEvent_LoopDetection_ThresholdNotMet(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "s1", Tools: []string{}, Skills: []string{}})
+
+	for i := 0; i < LoopThreshold-1; i++ {
+		tree.ApplyEvent(Event{Type: "PreToolUse", SessionID: "s1", Tool: "Bash", Timestamp: time.Now()})
+	}
+
+	n := tree.Nodes["s1"]
+	if n.ConsecutiveTools != 0 {
+		t.Errorf("expected ConsecutiveTools=0 below threshold, got %d", n.ConsecutiveTools)
+	}
+}
+
+func TestApplyEvent_LoopDetection_ThresholdMet(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "s1", Tools: []string{}, Skills: []string{}})
+
+	for i := 0; i < LoopThreshold; i++ {
+		tree.ApplyEvent(Event{Type: "PreToolUse", SessionID: "s1", Tool: "Bash", Timestamp: time.Now()})
+	}
+
+	n := tree.Nodes["s1"]
+	if n.ConsecutiveTools < LoopThreshold {
+		t.Errorf("expected ConsecutiveTools>=%d at threshold, got %d", LoopThreshold, n.ConsecutiveTools)
+	}
+}
+
+func TestApplyEvent_LoopDetection_ResetOnDifferentTool(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "s1", Tools: []string{}, Skills: []string{}})
+
+	for i := 0; i < LoopThreshold; i++ {
+		tree.ApplyEvent(Event{Type: "PreToolUse", SessionID: "s1", Tool: "Bash", Timestamp: time.Now()})
+	}
+	// Calling a different tool resets the loop counter.
+	tree.ApplyEvent(Event{Type: "PreToolUse", SessionID: "s1", Tool: "Read", Timestamp: time.Now()})
+
+	n := tree.Nodes["s1"]
+	if n.ConsecutiveTools != 0 {
+		t.Errorf("expected ConsecutiveTools reset to 0 after different tool, got %d", n.ConsecutiveTools)
+	}
+}
+
+func TestApplyEvent_LoopDetection_CounterIncrementsBeeyondThreshold(t *testing.T) {
+	tree := NewTree()
+	tree.AddNode(Node{ID: "s1", Tools: []string{}, Skills: []string{}})
+
+	extra := 2
+	for i := 0; i < LoopThreshold+extra; i++ {
+		tree.ApplyEvent(Event{Type: "PreToolUse", SessionID: "s1", Tool: "Grep", Timestamp: time.Now()})
+	}
+
+	n := tree.Nodes["s1"]
+	want := LoopThreshold + extra
+	if n.ConsecutiveTools != want {
+		t.Errorf("expected ConsecutiveTools=%d, got %d", want, n.ConsecutiveTools)
 	}
 }

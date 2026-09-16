@@ -1,15 +1,17 @@
 // Package hooks implements the embedded HTTP server that receives Claude Code hook events.
-// Claude Code fires hooks (PreToolUse, PostToolUse, Stop, SubagentStop, Notification)
-// by executing scripts; Orchard wires those scripts to POST JSON payloads to this server.
-// The server filters events by working directory so Orchard only processes events
-// belonging to its own session.
+// Claude Code fires hooks (PreToolUse, PostToolUse, Stop, SubagentStop, Notification,
+// PermissionRequest) by executing scripts; Orchard wires those scripts to POST JSON
+// payloads to this server. The server filters events by working directory so Orchard
+// only processes events belonging to its own session.
 package hooks
 
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/hcarminati/orchard/internal/agent"
@@ -20,12 +22,18 @@ import (
 const maxBodyBytes = 1 << 20 // 1 MiB
 
 // payload mirrors the JSON body that Claude Code sends for each hook event.
-// All five event types share this structure; unused fields are zero-valued.
+// All six event types share this structure; unused fields are zero-valued.
 type payload struct {
-	SessionID     string `json:"session_id"`
-	HookEventName string `json:"hook_event_name"`
-	CWD           string `json:"cwd"`
-	ToolName      string `json:"tool_name"`
+	SessionID string `json:"session_id"`
+	// ParentSessionID is the session ID of the parent agent that spawned this one.
+	// Present in hook events fired by subagent sessions.
+	ParentSessionID string `json:"parent_session_id"`
+	HookEventName   string `json:"hook_event_name"`
+	CWD             string `json:"cwd"`
+	ToolName        string `json:"tool_name"`
+	// ToolUseID is the unique identifier for this tool call instance.
+	// Used to correlate PreToolUse[Agent] events with their subagent child nodes.
+	ToolUseID string `json:"tool_use_id"`
 	// ToolInput is the raw JSON object describing what the tool was called with.
 	// Present for PreToolUse and PostToolUse.
 	ToolInput json.RawMessage `json:"tool_input"`
@@ -33,6 +41,8 @@ type payload struct {
 	ToolResponse string `json:"tool_response"`
 	// Message is the notification text. Present for Notification events.
 	Message string `json:"message"`
+	// Model is the model ID used by the agent for this session (e.g. "claude-sonnet-4-6").
+	Model string `json:"model"`
 }
 
 // Server is an embedded HTTP server that receives and forwards Claude Code hook events.
@@ -90,10 +100,25 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 	defer r.Body.Close()
 
-	var p payload
-	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+	// Capture the raw body for debug logging before decoding.
+	var rawBody json.RawMessage
+	if err := json.NewDecoder(r.Body).Decode(&rawBody); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		return
+	}
+
+	var p payload
+	if err := json.Unmarshal(rawBody, &p); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	// Log PostToolUse and Stop payloads to /tmp/orchard-hooks.log so we can inspect
+	// what token usage fields (if any) Claude Code actually sends in these events.
+	if p.HookEventName == "PostToolUse" || p.HookEventName == "Stop" {
+		pretty, _ := json.MarshalIndent(rawBody, "", "  ")
+		line := fmt.Sprintf("=== %s [%s] ===\n%s\n\n", p.HookEventName, time.Now().Format(time.RFC3339), pretty)
+		_ = appendToFile("/tmp/orchard-hooks.log", line)
 	}
 
 	// Only process events for our working directory.
@@ -108,13 +133,32 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		input = string(p.ToolInput)
 	}
 
+	eventType := p.HookEventName
+	toolName := p.ToolName
+
+	// Skill invocations arrive as PreToolUse[Skill]. Promote them to a first-class
+	// SkillTrigger event type and replace the tool name with the skill name so the
+	// event log can display them distinctly.
+	if eventType == "PreToolUse" && toolName == "Skill" && input != "" {
+		var inp struct {
+			Skill string `json:"skill"`
+		}
+		if err := json.Unmarshal([]byte(input), &inp); err == nil && inp.Skill != "" {
+			eventType = "SkillTrigger"
+			toolName = inp.Skill
+		}
+	}
+
 	e := agent.Event{
-		Type:      p.HookEventName,
+		Type:      eventType,
 		SessionID: p.SessionID,
-		Tool:      p.ToolName,
+		ParentID:  p.ParentSessionID,
+		Tool:      toolName,
+		ToolUseID: p.ToolUseID,
 		Input:     input,
 		Response:  p.ToolResponse,
 		Message:   p.Message,
+		Model:     agent.ParseModel(p.Model),
 		Timestamp: time.Now(),
 	}
 
@@ -126,4 +170,16 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusOK)
+}
+
+// appendToFile appends text to path, creating the file if it doesn't exist.
+// Used only for debug hook logging; errors are intentionally ignored.
+func appendToFile(path, text string) error {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.WriteString(text)
+	return err
 }

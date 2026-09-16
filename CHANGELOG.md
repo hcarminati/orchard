@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-05-25
+
+### Added
+- Session replay: `orchard replay [--project PATH] [--speed N]` plays back any past session from JSONL history at configurable speed; the standard TUI renders the replay identically to a live session (`internal/replay` package)
+- Files tab: real file-change data from `PostToolUse` Write/Edit/NotebookEdit events across all agents; shows operation label, path, agent name, and relative timestamp
+- Session timeline view: press `T` to switch the Agents panel to a horizontal timeline showing each agent as a proportional bar on a shared time axis; critical path (longest root→leaf chain) is highlighted in accent color
+- Loop/repetition detector: when an agent calls the same tool ≥ 3 times consecutively, a `⚠ loop×N` warning badge replaces the pills on its tree node; badge resets when a different tool fires
+- Skill pills and tool pills inline on tree nodes: `▸skill-name` in green for skills, colored lowercase labels for tools (bash/read/edit/grep/etc.)
+- Status summary in Agents panel header: `N running · N idle · N done` (only non-zero buckets); replaces raw count
+- `Node.Tools` and `Node.Skills` slices populated from live hook events: tools deduplicated on `PreToolUse`, skills on `SkillTrigger`
+- `Node.SpawnedAt` set for all live nodes (hook-created and subagent placeholders) from the triggering event timestamp
+- `appendUnique` helper in `internal/agent` for deduplication
+
+## [0.4.0] - 2026-04-13
+
+### Added
+- Tab-based right panel: `[` / `]` cycles between Events and future tabs
+- Events tab: real events for the focused agent, scrollable with timestamps
+- Tool call inspector: expand any event with `enter` to see full input and output
+- Skill triggers surfaced as a distinct `SkillTrigger` event type with a `⚡` label and green color
+- Session context header in the Events tab for all nodes (root and subagent)
+
 ## [0.3.0] - 2026-04-10
 
 ### Added
