@@ -7,6 +7,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-05-25
+
+### Added
+- `orchard diff <session-a.jsonl> <session-b.jsonl>`: compares two Claude Code sessions and shows what changed between them — agent count, total duration, cost, token usage, max nesting depth, loop count, per-tool call counts (added/removed/changed), and skill trigger changes; unique feature for understanding how agent behavior evolved across attempts
+- `internal/diff` package: `Compare(a, b []agent.Node)` produces a structured `Diff` with signed deltas; `Diff.Format()` renders a human-readable multi-line summary; `SessionSummary` struct aggregates NodeCount, Duration, ToolCounts, Skills, TotalCost, Usage, MaxDepth, LoopCount; 15 unit tests
+
+## [1.5.0] - 2026-05-25
+
+### Added
+- `orchard agents [--project PATH]`: lists registered Claude Code agent types from `~/.claude/settings.json` and local `.claude/settings.json`; shows name, description, and source (global/local)
+- `orchard skills [--project PATH]`: lists registered skills (slash commands) from settings.json; shows name, description, source
+- `internal/catalog` package: `Load(cwd)` reads agent types and skills from global and local settings files, deduplicates (local wins over global), and sorts alphabetically; `LoadFromHistory(sessionDir)` extracts observed agent types and skills from past JSONL files; 9 unit tests
+
+## [1.4.0] - 2026-05-25
+
+### Added
+- `orchard init [--port PORT]`: interactive first-time setup wizard; steps through merging hooks into settings.json, running health checks, and optionally creating `~/.config/orchard/config.toml` with budget/watchdog/cost_alert values
+- `internal/wizard` package: Bubbletea model with stepWelcome → stepSetup → stepDoctor → stepConfig → stepDone flow; 12 unit tests covering all input paths
+- `config.DefaultConfigPath()`: exported helper for resolving the config.toml path
+
+## [1.3.0] - 2026-05-25
+
+### Added
+- `orchard cancel [--project PATH] [--dry-run]`: discovers running Claude Code processes for the project via `ps` + `lsof` and sends SIGINT; `--dry-run` prints which PIDs would be cancelled without acting
+- `X` key in TUI: opens a cancel overlay showing the focused session name, SIGINT command, and how to use the `orchard cancel` subcommand; `esc` or `X` closes it
+- `internal/process` package: `FindForCWD(cwd)` discovers Claude Code processes by CWD, `SendInterrupt(pid)` sends SIGINT; tested for graceful handling of missing/non-existent processes
+
+## [1.2.0] - 2026-05-25
+
+### Added
+- `--watch PATH` flag: repeat to observe multiple project directories simultaneously — `orchard --watch /proj/a --watch /proj/b`; comma-separated values also accepted
+- Hook server now accepts events from all watched directories instead of a single CWD
+- Root session nodes in the Agents panel show a muted `[projectname]` prefix badge when multiple projects are loaded, so sessions from different repos are clearly distinguished
+- `session.Load` called once per watched directory at startup; nodes are tagged with `Node.ProjectDir` in multi-watch mode
+
+## [1.1.0] - 2026-05-25
+
+### Added
+- `orchard history [--project PATH]`: interactive TUI that lists all past Claude Code sessions for a project, sorted newest-first; each row shows date, duration, event count, and first user prompt snippet
+- Browse with `j`/`k` or arrow keys; press `enter` to replay any session through the standard TUI; press `e` to export the raw JSONL to stdout; `q` quits
+- `internal/history` package: `List(dir)`, `ListForCWD(cwd)`, `SessionMeta` struct with ID, File, StartTime, EndTime, EventCount, Snippet fields
+- `session.LoadFile(path)`: new exported function for loading a specific JSONL file (used by history-to-replay handoff)
+
+## [1.0.0] - 2026-05-25
+
+### Added
+- Comprehensive README.md: full feature list, ASCII art, keybindings table, quick start, architecture overview, install methods, common questions
+- `install.sh`: curl-installable shell script with platform detection, checksum verification, sudo-aware binary placement
+- `Formula/orchard.rb`: Homebrew formula template for multi-platform binary distribution via `brew tap hcarminati/tap`
+- `docs/architecture.md`: full internal architecture — package map, data flow diagram, Bubbletea/Lipgloss patterns, testing approach
+- `docs/configuration.md`: complete config reference for all config.toml fields, hidden.json, state.json, and environment variables
+- `docs/getting-started.md`: step-by-step onboarding from install through first session, split-pane setup for tmux/VS Code/iTerm2
+- Updated `CONTRIBUTING.md`: expanded with test patterns, feature checklist, package boundary rules, design principle
+
+## [0.9.0] - 2026-05-25
+
+### Added
+- Help overlay (`?`): full-screen keybinding reference organized into sections (Navigation, Events, Tree, View Modes, Session Management); includes live "Current State" panel showing active filter/panel/tab; `?`, `esc`, or `q` closes it
+- `orchard setup` subcommand: non-destructively merges Orchard hook entries (PreToolUse/PostToolUse/Stop/SubagentStop/Notification) into `~/.claude/settings.json`; `--port`, `--dry-run`, `--verify` flags
+- `orchard doctor` subcommand: runs health checks (port availability, settings.json, hooks configured, projects directory readable, Go runtime version); exits 0 on all-pass, 1 otherwise
+- MCP Servers tab (`MCP`): third right-panel tab reads `mcpServers` from `~/.claude/settings.json` and lists server name and command/URL
+- `internal/setup` package with `Run()`, `DefaultSettingsPath()`, and `DryRun()` — full test coverage
+- `internal/doctor` package with `RunAll()` and `AllPass()` — per-check tests
+
 ## [0.8.0] - 2026-05-25
 
 ### Added

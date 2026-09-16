@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -243,6 +244,16 @@ func (m Model) renderSearchBar() string {
 	return bar + strings.Repeat(" ", gap)
 }
 
+// projectBadge returns a muted "[basename] " prefix for multi-project display.
+// Returns "" when ProjectDir is empty (single-project mode).
+func projectBadge(n *agent.Node) string {
+	if n.ProjectDir == "" {
+		return ""
+	}
+	name := filepath.Base(n.ProjectDir)
+	return lipgloss.NewStyle().Foreground(colorMuted).Render("["+name+"] ")
+}
+
 // loopBadge returns a warning string when a node is stuck in a tool-call loop,
 // empty string otherwise. The badge shows the tool name and repetition count
 // so the developer can see at a glance what is repeating.
@@ -413,7 +424,7 @@ func (m Model) renderFooter() string {
 	if len(rightTabs) > 1 {
 		content += bind("[/]", "switch tab")
 	}
-	content += bind("/", "search") + bind("tab", "switch panel") + bind("q", "quit")
+	content += bind("/", "search") + bind("?", "help") + bind("tab", "switch panel") + bind("q", "quit")
 
 	// [d] hide — only for top-level non-running nodes in the agents panel, outside hidden view.
 	if m.activePanel == panelAgents && m.statusFilter != filterHidden {
@@ -538,9 +549,268 @@ func (m Model) rightTabContent() string {
 			return m.eventsContent()
 		case tabFiles:
 			return m.filesContent()
+		case tabMCP:
+			return m.mcpContent()
 		}
 	}
 	return ""
+}
+
+// mcpContent renders the MCP Servers tab: lists servers from ~/.claude/settings.json.
+func (m Model) mcpContent() string {
+	muted := lipgloss.NewStyle().Foreground(colorMuted).Padding(0, 1)
+
+	servers, err := loadMCPServers()
+	if err != nil || len(servers) == 0 {
+		return muted.Render("No MCP servers configured. Add them to ~/.claude/settings.json.")
+	}
+
+	innerW := m.innerWidth()
+	var lines []string
+	nameStyle := lipgloss.NewStyle().Bold(true).Foreground(colorFg)
+	descStyle := lipgloss.NewStyle().Foreground(colorMuted)
+
+	for _, s := range servers {
+		nameLine := nameStyle.Render(s.Name)
+		if s.Command != "" {
+			cmd := s.Command
+			if len([]rune(cmd)) > innerW-4 {
+				cmd = string([]rune(cmd)[:innerW-5]) + "…"
+			}
+			lines = append(lines, " "+nameLine)
+			lines = append(lines, "   "+descStyle.Render(cmd))
+		} else if s.URL != "" {
+			lines = append(lines, " "+nameLine)
+			lines = append(lines, "   "+descStyle.Render(s.URL))
+		} else {
+			lines = append(lines, " "+nameLine)
+		}
+		lines = append(lines, "")
+	}
+	// Trim trailing blank line.
+	for len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return strings.Join(lines, "\n")
+}
+
+// mcpServer holds the parsed configuration for a single MCP server entry.
+type mcpServer struct {
+	Name    string
+	Command string
+	URL     string
+}
+
+// loadMCPServers reads ~/.claude/settings.json and returns the list of configured MCP servers.
+// Returns nil and no error when the file does not exist or has no mcpServers key.
+func loadMCPServers() ([]mcpServer, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".claude", "settings.json"))
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	var raw struct {
+		MCPServers map[string]struct {
+			Command string   `json:"command"`
+			Args    []string `json:"args"`
+			URL     string   `json:"url"`
+		} `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, err
+	}
+
+	servers := make([]mcpServer, 0, len(raw.MCPServers))
+	names := make([]string, 0, len(raw.MCPServers))
+	for n := range raw.MCPServers {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		entry := raw.MCPServers[n]
+		cmd := entry.Command
+		if cmd != "" && len(entry.Args) > 0 {
+			cmd += " " + strings.Join(entry.Args, " ")
+		}
+		servers = append(servers, mcpServer{Name: n, Command: cmd, URL: entry.URL})
+	}
+	return servers, nil
+}
+
+// helpSection groups related keybindings for the help overlay.
+type helpSection struct {
+	title    string
+	bindings [][2]string // [key, description] pairs
+}
+
+// helpSections returns all sections to display in the help overlay.
+func helpSections() []helpSection {
+	return []helpSection{
+		{
+			title: "Navigation",
+			bindings: [][2]string{
+				{"j / ↓", "move cursor down"},
+				{"k / ↑", "move cursor up"},
+				{"tab", "switch panel focus"},
+				{"space", "expand / collapse node"},
+			},
+		},
+		{
+			title: "Events",
+			bindings: [][2]string{
+				{"enter", "open detail modal / mark winner"},
+				{"g", "jump to first event"},
+				{"G", "jump to last event"},
+				{"← / →", "prev / next event (in modal)"},
+				{"esc", "close modal"},
+				{"/", "open fuzzy search"},
+			},
+		},
+		{
+			title: "Tree",
+			bindings: [][2]string{
+				{"f", "cycle filter: all → running → errored → hidden"},
+				{"t / T", "toggle timeline view"},
+				{"d", "hide session (top-level, non-running)"},
+				{"r", "restore hidden session"},
+			},
+		},
+		{
+			title: "View Modes",
+			bindings: [][2]string{
+				{"[ / ]", "switch right-panel tab"},
+			},
+		},
+		{
+			title: "Session Management",
+			bindings: [][2]string{
+				{"q / ctrl+c", "quit"},
+				{"?", "toggle this help overlay"},
+			},
+		},
+	}
+}
+
+// renderCancelOverlay renders a compact overlay explaining how to cancel the
+// focused agent. It discovers running Claude Code processes for the session's
+// project directory and shows their PIDs so the user can send SIGINT.
+func (m Model) renderCancelOverlay() string {
+	title := lipgloss.NewStyle().Foreground(colorAccent).Bold(true).Render("Cancel Agent")
+	var sb strings.Builder
+	sb.WriteString(title)
+	sb.WriteString("\n\n")
+
+	// Identify the focused node.
+	nodes := m.visibleNodes()
+	if m.cursor < len(nodes) {
+		n := m.agents.Nodes[nodes[m.cursor].id]
+		if n != nil {
+			sb.WriteString(lipgloss.NewStyle().Foreground(colorFg).Render("Session: "+n.Name))
+			sb.WriteString("\n")
+		}
+	}
+
+	sb.WriteString("\n")
+	sb.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render("To cancel a Claude Code session, send SIGINT:"))
+	sb.WriteString("\n\n")
+	sb.WriteString(lipgloss.NewStyle().Foreground(colorFg).Render("  kill -INT <PID>"))
+	sb.WriteString("\n")
+	sb.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render("  (same as pressing Ctrl+C in the Claude Code terminal)"))
+	sb.WriteString("\n\n")
+	sb.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render("Or use the cancel subcommand:"))
+	sb.WriteString("\n\n")
+	sb.WriteString(lipgloss.NewStyle().Foreground(colorFg).Render("  orchard cancel [--project PATH]"))
+	sb.WriteString("\n\n")
+	sb.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render("Press esc or X to close"))
+
+	return sb.String()
+}
+
+// renderHelpOverlay renders the full-screen help overlay showing all keybindings.
+func (m Model) renderHelpOverlay(bodyH int) string {
+	bs := lipgloss.NewStyle().Foreground(colorAccent)
+	heading := lipgloss.NewStyle().Bold(true).Foreground(colorAccent)
+	keyStyle := lipgloss.NewStyle().Bold(true).Foreground(colorFg)
+	descStyle := lipgloss.NewStyle().Foreground(colorMuted)
+	mutedStyle := lipgloss.NewStyle().Foreground(colorMuted)
+
+	modalW := max(50, m.width*70/100)
+	innerW := max(1, modalW-4)
+
+	var contentLines []string
+	contentLines = append(contentLines, heading.Render("Current State"))
+	filterLabel := lipgloss.NewStyle().Foreground(colorFg).Render("filter: " + m.statusFilter.label())
+	panelLabel := "agents"
+	if m.activePanel == panelEvents {
+		panelLabel = "events"
+	}
+	activeLabel := lipgloss.NewStyle().Foreground(colorFg).Render("panel: " + panelLabel)
+	tabLabel := lipgloss.NewStyle().Foreground(colorFg).Render("tab: " + rightTabs[m.activeRightTab].label())
+	contentLines = append(contentLines, "  "+filterLabel+"   "+activeLabel+"   "+tabLabel)
+	contentLines = append(contentLines, mutedStyle.Render(strings.Repeat("─", min(innerW, 44))))
+	contentLines = append(contentLines, "")
+
+	const keyColW = 18
+	for _, sec := range helpSections() {
+		contentLines = append(contentLines, heading.Render(sec.title))
+		for _, b := range sec.bindings {
+			rendered := keyStyle.Render(b[0])
+			padW := max(0, keyColW-lipgloss.Width(rendered))
+			line := "  " + rendered + strings.Repeat(" ", padW) + descStyle.Render(b[1])
+			contentLines = append(contentLines, line)
+		}
+		contentLines = append(contentLines, "")
+	}
+	for len(contentLines) > 0 && contentLines[len(contentLines)-1] == "" {
+		contentLines = contentLines[:len(contentLines)-1]
+	}
+
+	modalH := max(8, len(contentLines)+4)
+	if modalH > bodyH-2 {
+		modalH = bodyH - 2
+	}
+	contentH := max(1, modalH-4)
+
+	visEnd := min(contentH, len(contentLines))
+	visible := contentLines[:visEnd]
+	padded := make([]string, contentH)
+	for i := range padded {
+		if i < len(visible) {
+			padded[i] = visible[i]
+		}
+	}
+
+	title := heading.Render("Help") + mutedStyle.Render("  · ?/esc/q to close")
+	titleW := lipgloss.Width(title)
+	topDashes := max(0, modalW-3-titleW)
+	topBorder := bs.Render("╭─") + title + bs.Render(strings.Repeat("─", topDashes)+"╮")
+	sep := bs.Render("├") + bs.Render(strings.Repeat("─", modalW-2)) + bs.Render("┤")
+
+	footerMuted := lipgloss.NewStyle().Foreground(colorMuted)
+	footerBold := lipgloss.NewStyle().Bold(true).Foreground(colorFg)
+	footerText := footerBold.Render("[?/esc/q]") + footerMuted.Render(" close")
+	footerPad := strings.Repeat(" ", max(0, innerW-lipgloss.Width(footerText)))
+	footerLine := bs.Render("│") + " " + footerText + footerPad + " " + bs.Render("│")
+	bottomBorder := bs.Render("╰") + bs.Render(strings.Repeat("─", modalW-2)) + bs.Render("╯")
+
+	var out []string
+	out = append(out, topBorder)
+	for _, cl := range padded {
+		if lipgloss.Width(cl) > innerW {
+			cl = lipgloss.NewStyle().MaxWidth(innerW-1).Render(cl) + "…"
+		}
+		rendered := lipgloss.NewStyle().Width(innerW).Render(cl)
+		out = append(out, bs.Render("│")+" "+rendered+" "+bs.Render("│"))
+	}
+	out = append(out, sep, footerLine, bottomBorder)
+	return strings.Join(out, "\n")
 }
 
 // fileChange holds one file-modification event for display in the Files tab.
@@ -840,7 +1110,7 @@ func (m Model) agentsContent() string {
 			if n.Winner {
 				indicator = " ✓"
 			}
-			nameContent := prefix + icon + dot(statusColor(n.Status)) + " " + n.Name + indicator
+			nameContent := prefix + projectBadge(n) + icon + dot(statusColor(n.Status)) + " " + n.Name + indicator
 			if n.Status == agent.StatusError && n.ErrorMsg != "" {
 				nameContent += " " + lipgloss.NewStyle().Foreground(colorRed).Render("✗ "+n.ErrorMsg)
 			} else {
@@ -880,7 +1150,11 @@ func (m Model) agentsContent() string {
 				prefix = "  "
 			}
 		}
-		nameContent := prefix + connector + icon + dot(statusColor(n.Status)) + " " + n.Name
+		badge := ""
+		if entry.depth == 0 {
+			badge = projectBadge(n)
+		}
+		nameContent := prefix + connector + badge + icon + dot(statusColor(n.Status)) + " " + n.Name
 		if n.Status == agent.StatusError && n.ErrorMsg != "" {
 			nameContent += " " + lipgloss.NewStyle().Foreground(colorRed).Render("✗ "+n.ErrorMsg)
 		} else {
@@ -1413,6 +1687,18 @@ func (m Model) renderModalFooterBar() string {
 		return k + d
 	}
 	content := " " + bind("[←/→]", "prev/next") + bind("[j/k]", "scroll") + bind("[esc]", "close")
+	gap := max(0, m.width-lipgloss.Width(content))
+	return content + strings.Repeat(" ", gap)
+}
+
+// renderHelpFooterBar returns the single-line footer shown while the help overlay is open.
+func (m Model) renderHelpFooterBar() string {
+	bind := func(key, desc string) string {
+		k := lipgloss.NewStyle().Bold(true).Foreground(colorFg).Render(key)
+		d := lipgloss.NewStyle().Foreground(colorMuted).Render(" " + desc + "  ")
+		return k + d
+	}
+	content := " " + bind("[?/esc/q]", "close help")
 	gap := max(0, m.width-lipgloss.Width(content))
 	return content + strings.Repeat(" ", gap)
 }
