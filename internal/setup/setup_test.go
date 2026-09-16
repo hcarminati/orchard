@@ -23,18 +23,22 @@ func writeSettings(t *testing.T, dir string, v interface{}) string {
 	return path
 }
 
-// readSettings reads and parses the settings file.
-func readSettings(t *testing.T, path string) map[string]json.RawMessage {
+// readRawSettings reads the settings file and returns the raw hooks object.
+func readRawHooks(t *testing.T, path string) map[string][]json.RawMessage {
 	t.Helper()
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	var v map[string]json.RawMessage
-	if err := json.Unmarshal(data, &v); err != nil {
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(data, &root); err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	return v
+	hooks, err := parseHooks(root)
+	if err != nil {
+		t.Fatalf("parse hooks: %v", err)
+	}
+	return hooks
 }
 
 func TestRunEmptySettings(t *testing.T) {
@@ -65,19 +69,30 @@ func TestRunEmptySettings(t *testing.T) {
 		t.Errorf("expected 'Added PreToolUse hook' in output, got: %s", out)
 	}
 
-	// File should now exist.
-	if _, err := os.Stat(path); err != nil {
-		t.Errorf("expected settings file to be created: %v", err)
+	// File should now exist and contain the http hook URL.
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("expected settings file to be created: %v", err)
+	}
+	if !strings.Contains(string(data), "localhost:7070") {
+		t.Error("expected localhost:7070 in settings file")
+	}
+	if !strings.Contains(string(data), `"http"`) {
+		t.Error("expected http hook type in settings file")
 	}
 }
 
 func TestRunExistingHooks(t *testing.T) {
 	dir := t.TempDir()
-	// Pre-populate with a different hook entry.
+	// Pre-populate with an existing hook entry in the new group format.
 	initial := map[string]interface{}{
 		"hooks": map[string]interface{}{
-			"PreToolUse": []map[string]string{
-				{"type": "command", "command": "echo hello"},
+			"PreToolUse": []map[string]interface{}{
+				{
+					"hooks": []map[string]string{
+						{"type": "command", "command": "echo hello"},
+					},
+				},
 			},
 		},
 	}
@@ -100,41 +115,36 @@ func TestRunExistingHooks(t *testing.T) {
 		t.Error("expected PreToolUse to be added alongside existing entry")
 	}
 
-	// Verify that the original echo entry is preserved.
-	root := readSettings(t, path)
-	var hooksObj map[string]json.RawMessage
-	if err := json.Unmarshal(root["hooks"], &hooksObj); err != nil {
-		t.Fatalf("parse hooks: %v", err)
+	// Verify that the original echo entry is preserved and the orchard entry is added.
+	hooks := readRawHooks(t, path)
+	preEntries := hooks["PreToolUse"]
+	if len(preEntries) != 2 {
+		t.Fatalf("expected 2 PreToolUse entries, got %d", len(preEntries))
 	}
-	var preEntries []HookEntry
-	if err := json.Unmarshal(hooksObj["PreToolUse"], &preEntries); err != nil {
-		t.Fatalf("parse PreToolUse: %v", err)
+
+	joined := ""
+	for _, raw := range preEntries {
+		joined += string(raw)
 	}
-	foundEcho := false
-	foundOrchard := false
-	for _, e := range preEntries {
-		if e.Command == "echo hello" {
-			foundEcho = true
-		}
-		if strings.Contains(e.Command, "localhost:7070") {
-			foundOrchard = true
-		}
-	}
-	if !foundEcho {
+	if !strings.Contains(joined, "echo hello") {
 		t.Error("original echo entry was removed")
 	}
-	if !foundOrchard {
+	if !strings.Contains(joined, "localhost:7070") {
 		t.Error("orchard entry was not added")
 	}
 }
 
 func TestRunAlreadyConfigured(t *testing.T) {
 	dir := t.TempDir()
-	cmd := hookCommand(7070)
+	// Pre-populate with the orchard http hook already present.
 	initial := map[string]interface{}{
 		"hooks": map[string]interface{}{
-			"PreToolUse": []map[string]string{
-				{"type": "command", "command": cmd},
+			"PreToolUse": []map[string]interface{}{
+				{
+					"hooks": []map[string]string{
+						{"type": "http", "url": hookURL(7070)},
+					},
+				},
 			},
 		},
 	}
@@ -208,9 +218,14 @@ func TestRunCustomPort(t *testing.T) {
 }
 
 func TestHasOrchardEntry(t *testing.T) {
+	makeRaw := func(v interface{}) json.RawMessage {
+		b, _ := json.Marshal(v)
+		return b
+	}
+
 	tests := []struct {
 		name   string
-		list   []HookEntry
+		list   []json.RawMessage
 		port   int
 		expect bool
 	}{
@@ -221,25 +236,25 @@ func TestHasOrchardEntry(t *testing.T) {
 			expect: false,
 		},
 		{
-			name: "matching entry",
-			list: []HookEntry{
-				{Type: "command", Command: hookCommand(7070)},
+			name: "matching http entry",
+			list: []json.RawMessage{
+				makeRaw(orchardGroup(7070)),
 			},
 			port:   7070,
 			expect: true,
 		},
 		{
 			name: "different port",
-			list: []HookEntry{
-				{Type: "command", Command: hookCommand(8080)},
+			list: []json.RawMessage{
+				makeRaw(orchardGroup(8080)),
 			},
 			port:   7070,
 			expect: false,
 		},
 		{
 			name: "unrelated entry",
-			list: []HookEntry{
-				{Type: "command", Command: "echo hello"},
+			list: []json.RawMessage{
+				makeRaw(HookGroup{Hooks: []HookHandler{{Type: "command", Command: "echo hello"}}}),
 			},
 			port:   7070,
 			expect: false,
@@ -266,5 +281,28 @@ func TestParseHooksMalformed(t *testing.T) {
 	}
 	if len(hooks) != 0 {
 		t.Errorf("expected empty hooks map for malformed input, got %d entries", len(hooks))
+	}
+}
+
+func TestOrchardGroupFormat(t *testing.T) {
+	// Verify the generated group matches the Claude Code 2.x hook format exactly.
+	group := orchardGroup(7070)
+	b, err := json.Marshal(group)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	s := string(b)
+	if !strings.Contains(s, `"hooks"`) {
+		t.Error("expected 'hooks' key in group JSON")
+	}
+	if !strings.Contains(s, `"http"`) {
+		t.Error("expected 'http' type in group JSON")
+	}
+	if !strings.Contains(s, "localhost:7070") {
+		t.Error("expected localhost:7070 in group JSON")
+	}
+	// Should NOT have a matcher (omitempty).
+	if strings.Contains(s, `"matcher"`) {
+		t.Error("unexpected 'matcher' key in group JSON — should be omitted when empty")
 	}
 }
