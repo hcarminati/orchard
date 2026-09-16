@@ -42,9 +42,6 @@ func hookCommand(port int) string {
 	return fmt.Sprintf("curl -s -X POST http://localhost:%d/hook -H 'Content-Type: application/json' -d @- || true", port)
 }
 
-// orchardhookMarker is text in the command that identifies an orchard hook entry.
-const orchardHookMarker = "localhost:"
-
 // Result describes what setup did for a single hook type.
 type Result struct {
 	Hook    HookType

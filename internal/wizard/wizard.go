@@ -30,7 +30,6 @@ type configField struct {
 	label   string
 	hint    string
 	value   string
-	cursor  int // rune index for edit cursor
 }
 
 // Model is the Bubbletea model for the setup wizard.

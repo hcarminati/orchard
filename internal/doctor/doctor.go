@@ -61,7 +61,7 @@ func CheckSettingsFile() Check {
 		return Check{
 			Name:    "settings",
 			Pass:    false,
-			Message: fmt.Sprintf("~/.claude/settings.json not found — run `orchard setup` to create it"),
+			Message: "~/.claude/settings.json not found — run `orchard setup` to create it",
 		}
 	}
 	return Check{
