@@ -77,8 +77,15 @@ Configurable alert when an agent has been quiet for too long — yellow badge at
 ### Help overlay
 Press `?` at any time for a full keybindings reference, organized by section.
 
+### `orchard init`
+Interactive first-time setup wizard — merges hooks, runs health checks, and creates config in one shot:
+```sh
+orchard init
+orchard init --port 7071   # use a custom port
+```
+
 ### `orchard setup`
-One command wires up the Claude Code hook integration:
+Non-interactive hook wiring for scripted environments:
 ```sh
 orchard setup        # merges hook config into ~/.claude/settings.json
 orchard setup --dry-run  # preview without writing
@@ -94,6 +101,42 @@ orchard doctor
 # ✓ PreToolUse hook configured
 # ✓ PostToolUse hook configured
 # ✓ ~/.claude/projects/ readable
+```
+
+### `orchard history`
+Browse past sessions for a project in a TUI picker. From there you can replay or export any session:
+```sh
+orchard history                        # sessions for the current directory
+orchard history --project /my/project  # sessions for a specific project
+```
+
+### `orchard cancel`
+Send SIGINT to running Claude Code processes for a project:
+```sh
+orchard cancel                         # cancel processes in the current directory
+orchard cancel --project /my/project   # cancel a specific project
+orchard cancel --dry-run               # show which processes would be cancelled
+```
+
+### `orchard diff`
+Compare two sessions and show what changed — agent count, duration, cost, tool usage, skill triggers:
+```sh
+orchard diff session-a.jsonl session-b.jsonl
+```
+Session JSONL files are in `~/.claude/projects/<encoded-path>/`.
+
+### `orchard agents`
+List registered Claude Code agent types (from `~/.claude/settings.json` and past sessions):
+```sh
+orchard agents
+orchard agents --project /my/project
+```
+
+### `orchard skills`
+List registered skills (slash commands) visible to Orchard:
+```sh
+orchard skills
+orchard skills --project /my/project
 ```
 
 ---
