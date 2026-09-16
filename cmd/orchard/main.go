@@ -19,6 +19,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/hcarminati/orchard/internal/agent"
+	"github.com/hcarminati/orchard/internal/catalog"
+	"github.com/hcarminati/orchard/internal/diff"
 	"github.com/hcarminati/orchard/internal/config"
 	"github.com/hcarminati/orchard/internal/doctor"
 	"github.com/hcarminati/orchard/internal/history"
@@ -53,6 +55,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 			return runCancel(args[1:], stdout, stderr)
 		case "init":
 			return runInit(args[1:], stdout, stderr)
+		case "agents":
+			return runAgents(args[1:], stdout, stderr)
+		case "skills":
+			return runSkills(args[1:], stdout, stderr)
+		case "diff":
+			return runDiff(args[1:], stdout, stderr)
 		case "setup":
 			return runSetup(args[1:], stdout, stderr)
 		case "doctor":
@@ -402,6 +410,145 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 
 	if !doctor.AllPass(checks) {
 		return 1
+	}
+	return 0
+}
+
+// runDiff handles the `orchard diff` subcommand.
+// It compares two sessions and prints what changed.
+func runDiff(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("orchard diff", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.Usage = func() {
+		fmt.Fprintln(stderr, "usage: orchard diff <session-a.jsonl> <session-b.jsonl>")
+		fmt.Fprintln(stderr, "")
+		fmt.Fprintln(stderr, "Compare two Claude Code sessions and show what changed:")
+		fmt.Fprintln(stderr, "agent count, duration, cost, tool usage, skill triggers.")
+		fmt.Fprintln(stderr, "")
+		fmt.Fprintln(stderr, "flags:")
+		fs.PrintDefaults()
+	}
+
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	if fs.NArg() != 2 {
+		fs.Usage()
+		return 2
+	}
+
+	pathA, pathB := fs.Arg(0), fs.Arg(1)
+
+	nodesA, err := session.LoadFile(pathA)
+	if err != nil {
+		fmt.Fprintf(stderr, "error loading %s: %v\n", pathA, err)
+		return 1
+	}
+	nodesB, err := session.LoadFile(pathB)
+	if err != nil {
+		fmt.Fprintf(stderr, "error loading %s: %v\n", pathB, err)
+		return 1
+	}
+
+	d := diff.Compare(nodesA, nodesB)
+
+	// Set session IDs for display.
+	if len(nodesA) > 0 {
+		d.A.ID = nodesA[0].ID
+		if len(d.A.ID) > 8 {
+			d.A.ID = d.A.ID[:8]
+		}
+	}
+	if len(nodesB) > 0 {
+		d.B.ID = nodesB[0].ID
+		if len(d.B.ID) > 8 {
+			d.B.ID = d.B.ID[:8]
+		}
+	}
+
+	fmt.Fprint(stdout, d.Format())
+	return 0
+}
+
+// runAgents handles the `orchard agents` subcommand.
+// It lists registered Claude Code agent types from settings.json and past sessions.
+func runAgents(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("orchard agents", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	project := fs.String("project", "", "project working directory (default: current directory)")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	cwd := *project
+	if cwd == "" {
+		var err error
+		cwd, err = os.Getwd()
+		if err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return 1
+		}
+	}
+
+	cat, err := catalog.Load(cwd)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+
+	if len(cat.Agents) == 0 {
+		fmt.Fprintln(stdout, "no agent types found. Agent types are registered in ~/.claude/settings.json under 'agentTypes'.")
+		return 0
+	}
+
+	fmt.Fprintf(stdout, "Agent types (%d):\n\n", len(cat.Agents))
+	for _, a := range cat.Agents {
+		desc := a.Description
+		if desc == "" {
+			desc = "(no description)"
+		}
+		fmt.Fprintf(stdout, "  %-20s  %s  [%s]\n", a.Name, desc, a.Source)
+	}
+	return 0
+}
+
+// runSkills handles the `orchard skills` subcommand.
+// It lists registered skills (slash commands) from settings.json and past sessions.
+func runSkills(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("orchard skills", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	project := fs.String("project", "", "project working directory (default: current directory)")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	cwd := *project
+	if cwd == "" {
+		var err error
+		cwd, err = os.Getwd()
+		if err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return 1
+		}
+	}
+
+	cat, err := catalog.Load(cwd)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+
+	if len(cat.Skills) == 0 {
+		fmt.Fprintln(stdout, "no skills found. Skills are registered in ~/.claude/settings.json under 'skills'.")
+		return 0
+	}
+
+	fmt.Fprintf(stdout, "Skills (%d):\n\n", len(cat.Skills))
+	for _, s := range cat.Skills {
+		desc := s.Description
+		if desc == "" {
+			desc = "(no description)"
+		}
+		fmt.Fprintf(stdout, "  %-20s  %s  [%s]\n", s.Name, desc, s.Source)
 	}
 	return 0
 }

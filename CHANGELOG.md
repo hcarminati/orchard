@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-05-25
+
+### Added
+- `orchard diff <session-a.jsonl> <session-b.jsonl>`: compares two Claude Code sessions and shows what changed between them — agent count, total duration, cost, token usage, max nesting depth, loop count, per-tool call counts (added/removed/changed), and skill trigger changes; unique feature for understanding how agent behavior evolved across attempts
+- `internal/diff` package: `Compare(a, b []agent.Node)` produces a structured `Diff` with signed deltas; `Diff.Format()` renders a human-readable multi-line summary; `SessionSummary` struct aggregates NodeCount, Duration, ToolCounts, Skills, TotalCost, Usage, MaxDepth, LoopCount; 15 unit tests
+
+## [1.5.0] - 2026-05-25
+
+### Added
+- `orchard agents [--project PATH]`: lists registered Claude Code agent types from `~/.claude/settings.json` and local `.claude/settings.json`; shows name, description, and source (global/local)
+- `orchard skills [--project PATH]`: lists registered skills (slash commands) from settings.json; shows name, description, source
+- `internal/catalog` package: `Load(cwd)` reads agent types and skills from global and local settings files, deduplicates (local wins over global), and sorts alphabetically; `LoadFromHistory(sessionDir)` extracts observed agent types and skills from past JSONL files; 9 unit tests
+
 ## [1.4.0] - 2026-05-25
 
 ### Added
