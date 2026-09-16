@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-05-25
+
+### Added
+- `orchard cancel [--project PATH] [--dry-run]`: discovers running Claude Code processes for the project via `ps` + `lsof` and sends SIGINT; `--dry-run` prints which PIDs would be cancelled without acting
+- `X` key in TUI: opens a cancel overlay showing the focused session name, SIGINT command, and how to use the `orchard cancel` subcommand; `esc` or `X` closes it
+- `internal/process` package: `FindForCWD(cwd)` discovers Claude Code processes by CWD, `SendInterrupt(pid)` sends SIGINT; tested for graceful handling of missing/non-existent processes
+
+## [1.2.0] - 2026-05-25
+
+### Added
+- `--watch PATH` flag: repeat to observe multiple project directories simultaneously — `orchard --watch /proj/a --watch /proj/b`; comma-separated values also accepted
+- Hook server now accepts events from all watched directories instead of a single CWD
+- Root session nodes in the Agents panel show a muted `[projectname]` prefix badge when multiple projects are loaded, so sessions from different repos are clearly distinguished
+- `session.Load` called once per watched directory at startup; nodes are tagged with `Node.ProjectDir` in multi-watch mode
+
 ## [1.1.0] - 2026-05-25
 
 ### Added
