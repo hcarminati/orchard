@@ -20,9 +20,11 @@ import (
 
 	"github.com/hcarminati/orchard/internal/agent"
 	"github.com/hcarminati/orchard/internal/config"
+	"github.com/hcarminati/orchard/internal/doctor"
 	"github.com/hcarminati/orchard/internal/hooks"
 	"github.com/hcarminati/orchard/internal/replay"
 	"github.com/hcarminati/orchard/internal/session"
+	"github.com/hcarminati/orchard/internal/setup"
 	"github.com/hcarminati/orchard/internal/ui"
 )
 
@@ -38,8 +40,15 @@ func main() {
 // tested without calling os.Exit directly.
 func run(args []string, stdout, stderr io.Writer) int {
 	// Route subcommands before the main flag set so they get their own flags.
-	if len(args) > 0 && args[0] == "replay" {
-		return runReplay(args[1:], stdout, stderr)
+	if len(args) > 0 {
+		switch args[0] {
+		case "replay":
+			return runReplay(args[1:], stdout, stderr)
+		case "setup":
+			return runSetup(args[1:], stdout, stderr)
+		case "doctor":
+			return runDoctor(args[1:], stdout, stderr)
+		}
 	}
 
 	fs := flag.NewFlagSet("orchard", flag.ContinueOnError)
@@ -241,6 +250,102 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	close(done)
+	return 0
+}
+
+// runSetup handles the `orchard setup` subcommand.
+// It non-destructively merges Orchard's hook configuration into ~/.claude/settings.json.
+func runSetup(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("orchard setup", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.Usage = func() {
+		fmt.Fprintln(stderr, "usage: orchard setup [--port PORT] [--dry-run] [--verify]")
+		fmt.Fprintln(stderr, "")
+		fmt.Fprintln(stderr, "Merges Orchard hook config into ~/.claude/settings.json.")
+		fmt.Fprintln(stderr, "")
+		fmt.Fprintln(stderr, "flags:")
+		fs.PrintDefaults()
+	}
+
+	portStr := fs.String("port", "7070", "hook server port")
+	dryRun := fs.Bool("dry-run", false, "print what would be changed without writing")
+	verify := fs.Bool("verify", false, "run health checks after setup (like orchard doctor)")
+
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	port, err := parsePort(*portStr)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: invalid --port %q: %v\n", *portStr, err)
+		return 1
+	}
+
+	settingsPath, err := setup.DefaultSettingsPath()
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+
+	_, err = setup.Run(settingsPath, setup.Options{
+		Port:   port,
+		DryRun: *dryRun,
+		Stdout: stdout,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+
+	if *verify {
+		fmt.Fprintln(stdout, "")
+		fmt.Fprintln(stdout, "Running health checks…")
+		checks := doctor.RunAll(port)
+		for _, c := range checks {
+			fmt.Fprintln(stdout, c.String())
+		}
+		if !doctor.AllPass(checks) {
+			return 1
+		}
+	}
+
+	return 0
+}
+
+// runDoctor handles the `orchard doctor` subcommand.
+// It runs a series of health checks and prints results.
+func runDoctor(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("orchard doctor", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.Usage = func() {
+		fmt.Fprintln(stderr, "usage: orchard doctor [--port PORT]")
+		fmt.Fprintln(stderr, "")
+		fmt.Fprintln(stderr, "Runs health checks for the Orchard installation.")
+		fmt.Fprintln(stderr, "")
+		fmt.Fprintln(stderr, "flags:")
+		fs.PrintDefaults()
+	}
+
+	portStr := fs.String("port", "7070", "hook server port to check")
+
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	port, err := parsePort(*portStr)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: invalid --port %q: %v\n", *portStr, err)
+		return 1
+	}
+
+	checks := doctor.RunAll(port)
+	for _, c := range checks {
+		fmt.Fprintln(stdout, c.String())
+	}
+
+	if !doctor.AllPass(checks) {
+		return 1
+	}
 	return 0
 }
 

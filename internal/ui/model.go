@@ -38,11 +38,12 @@ type rightTab int
 const (
 	tabEvents rightTab = iota
 	tabFiles
+	tabMCP
 )
 
 // rightTabs is the ordered list of tabs shown in the right panel.
 // Adding a new tab only requires appending it here and adding a case to label().
-var rightTabs = []rightTab{tabEvents, tabFiles}
+var rightTabs = []rightTab{tabEvents, tabFiles, tabMCP}
 
 // label returns the display name for a right panel tab.
 func (t rightTab) label() string {
@@ -51,6 +52,8 @@ func (t rightTab) label() string {
 		return "Events"
 	case tabFiles:
 		return "Files"
+	case tabMCP:
+		return "MCP"
 	default:
 		return "?"
 	}
@@ -194,6 +197,7 @@ type Model struct {
 	searchQuery      string          // current search filter typed by the user
 	costAlertDismiss map[string]bool // session IDs where the cost alert has been dismissed
 	bellSent         map[string]bool // session IDs where the terminal bell has already fired
+	helpOpen         bool            // whether the full-screen help overlay is visible
 }
 
 // autoHideAge is how long a session must be inactive before it is automatically
@@ -741,6 +745,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		// Help overlay intercepts all keys while open.
+		if m.helpOpen {
+			switch msg.String() {
+			case "?", "esc", "q":
+				m.helpOpen = false
+			}
+			return m, nil
+		}
 		// Search bar intercepts all keys while open.
 		if m.searchOpen {
 			switch msg.String() {
@@ -781,6 +793,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		switch msg.String() {
+		case "?":
+			m.helpOpen = true
+			return m, nil
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		case "tab":
@@ -1207,7 +1222,9 @@ func (m Model) View() string {
 	body := m.renderBody(bodyH)
 	footer := m.renderFooter()
 
-	if m.modalOpen {
+	if m.helpOpen {
+		body = overlayCenter(dimBody(body), m.renderHelpOverlay(bodyH), m.width, bodyH)
+	} else if m.modalOpen {
 		body = overlayCenter(dimBody(body), m.renderDetailModal(bodyH), m.width, bodyH)
 		footer = m.renderModalFooterBar()
 	}

@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -53,6 +55,82 @@ func TestRunVersion(t *testing.T) {
 	}
 }
 
+func TestRunSetup_DryRun(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"setup", "--dry-run"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d (stderr: %s)", code, stderr.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "dry-run") {
+		t.Errorf("expected 'dry-run' in output, got: %q", out)
+	}
+}
+
+func TestRunSetup_WritesFile(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+
+	if err := os.MkdirAll(filepath.Join(dir, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"setup"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d (stderr: %s)", code, stderr.String())
+	}
+
+	settingsPath := filepath.Join(dir, ".claude", "settings.json")
+	if _, err := os.Stat(settingsPath); err != nil {
+		t.Errorf("expected settings.json to be created: %v", err)
+	}
+}
+
+func TestRunSetup_InvalidPort(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"setup", "--port", "abc"}, &stdout, &stderr)
+	if code != 1 {
+		t.Errorf("expected exit 1 for invalid port, got %d", code)
+	}
+}
+
+func TestRunDoctor_Runs(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	_ = run([]string{"doctor"}, &stdout, &stderr)
+	out := stdout.String()
+	if !strings.Contains(out, "Go runtime") {
+		t.Errorf("expected 'Go runtime' in doctor output, got: %q", out)
+	}
+}
+
+func TestRunDoctor_InvalidPort(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"doctor", "--port", "abc"}, &stdout, &stderr)
+	if code != 1 {
+		t.Errorf("expected exit 1 for invalid port, got %d", code)
+	}
+}
+
+func TestRunSetup_Verify(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+
+	if err := os.MkdirAll(filepath.Join(dir, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	_ = run([]string{"setup", "--verify"}, &stdout, &stderr)
+	out := stdout.String()
+	if !strings.Contains(out, "health checks") {
+		t.Errorf("expected 'health checks' in verify output, got: %q", out)
+	}
+}
+
 func TestRunInvalidPort(t *testing.T) {
 	tests := []struct {
 		port string
@@ -65,8 +143,6 @@ func TestRunInvalidPort(t *testing.T) {
 
 	for _, tc := range tests {
 		var stdout, stderr bytes.Buffer
-		// run() validates the port before starting the TUI, so it returns without
-		// launching Bubbletea — safe to call directly in tests.
 		code := run([]string{"--port", tc.port}, &stdout, &stderr)
 		if code != 1 {
 			t.Errorf("port %q: expected exit code 1, got %d", tc.port, code)
