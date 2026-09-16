@@ -15,9 +15,9 @@ import (
 type HookType string
 
 const (
-	HookPreToolUse  HookType = "PreToolUse"
-	HookPostToolUse HookType = "PostToolUse"
-	HookStop        HookType = "Stop"
+	HookPreToolUse   HookType = "PreToolUse"
+	HookPostToolUse  HookType = "PostToolUse"
+	HookStop         HookType = "Stop"
 	HookSubagentStop HookType = "SubagentStop"
 	HookNotification HookType = "Notification"
 )
@@ -31,15 +31,34 @@ var allHookTypes = []HookType{
 	HookNotification,
 }
 
-// HookEntry is the JSON structure for a single Claude Code hook entry.
-type HookEntry struct {
-	Type    string `json:"type"`    // "command"
-	Command string `json:"command"` // shell command to run
+// HookHandler is the inner hook definition — what actually runs when the event fires.
+// Claude Code 2.x supports "http" (POST to a URL) and "command" (shell command).
+type HookHandler struct {
+	Type    string `json:"type"`              // "http" or "command"
+	URL     string `json:"url,omitempty"`     // for type "http"
+	Command string `json:"command,omitempty"` // for type "command"
 }
 
-// hookCommand returns the shell command for posting to orchard's hook server.
-func hookCommand(port int) string {
-	return fmt.Sprintf("curl -s -X POST http://localhost:%d/hook -H 'Content-Type: application/json' -d @- || true", port)
+// HookGroup is one entry in a hook event's array.
+// Claude Code 2.x nests handlers inside a group that carries an optional matcher.
+// An empty or absent matcher matches all tools.
+type HookGroup struct {
+	Matcher string        `json:"matcher,omitempty"`
+	Hooks   []HookHandler `json:"hooks"`
+}
+
+// hookURL returns the Orchard hook server URL for the given port.
+func hookURL(port int) string {
+	return fmt.Sprintf("http://localhost:%d/hook", port)
+}
+
+// orchardGroup returns the HookGroup that Orchard adds for each hook type.
+func orchardGroup(port int) HookGroup {
+	return HookGroup{
+		Hooks: []HookHandler{
+			{Type: "http", URL: hookURL(port)},
+		},
+	}
 }
 
 // Result describes what setup did for a single hook type.
@@ -51,9 +70,9 @@ type Result struct {
 
 // Options controls orchard setup behavior.
 type Options struct {
-	Port    int
-	DryRun  bool
-	Stdout  io.Writer
+	Port   int
+	DryRun bool
+	Stdout io.Writer
 }
 
 // Run merges Orchard hook entries into settingsPath and reports results.
@@ -81,14 +100,12 @@ func Run(settingsPath string, opts Options) ([]Result, error) {
 		}
 	}
 
-	// Parse the hooks section; it is an object keyed by hook type.
+	// Parse the hooks section; entries are kept as raw JSON to preserve
+	// whatever format the user has (old or new) for non-Orchard hooks.
 	hooks, err := parseHooks(root)
 	if err != nil {
 		return nil, fmt.Errorf("parse hooks: %w", err)
 	}
-
-	cmd := hookCommand(port)
-	entry := HookEntry{Type: "command", Command: cmd}
 
 	var results []Result
 	for _, ht := range allHookTypes {
@@ -107,7 +124,11 @@ func Run(settingsPath string, opts Options) ([]Result, error) {
 			Message: fmt.Sprintf("✓ Added %s hook", ht),
 		})
 		if !opts.DryRun {
-			hooks[string(ht)] = append(list, entry)
+			b, err := json.Marshal(orchardGroup(port))
+			if err != nil {
+				return nil, fmt.Errorf("marshal hook group: %w", err)
+			}
+			hooks[string(ht)] = append(list, json.RawMessage(b))
 		}
 	}
 
@@ -154,9 +175,11 @@ func Run(settingsPath string, opts Options) ([]Result, error) {
 	return results, nil
 }
 
-// parseHooks extracts the hooks section from root as map[hookTypeName][]HookEntry.
-func parseHooks(root map[string]json.RawMessage) (map[string][]HookEntry, error) {
-	hooks := make(map[string][]HookEntry)
+// parseHooks extracts the hooks section from root as map[hookTypeName][]json.RawMessage.
+// Each element is kept as raw JSON so existing user hooks (old or new format) are
+// preserved verbatim.
+func parseHooks(root map[string]json.RawMessage) (map[string][]json.RawMessage, error) {
+	hooks := make(map[string][]json.RawMessage)
 	raw, ok := root["hooks"]
 	if !ok {
 		return hooks, nil
@@ -166,9 +189,9 @@ func parseHooks(root map[string]json.RawMessage) (map[string][]HookEntry, error)
 		return hooks, nil // if malformed, start fresh
 	}
 	for k, v := range hooksObj {
-		var entries []HookEntry
+		var entries []json.RawMessage
 		if err := json.Unmarshal(v, &entries); err != nil {
-			// If the value isn't an array of HookEntry, leave empty — don't corrupt.
+			// If the value isn't an array, leave empty — don't corrupt.
 			continue
 		}
 		hooks[k] = entries
@@ -177,8 +200,7 @@ func parseHooks(root map[string]json.RawMessage) (map[string][]HookEntry, error)
 }
 
 // encodeHooks serialises hooks back to json.RawMessage for embedding in root.
-func encodeHooks(hooks map[string][]HookEntry) (json.RawMessage, error) {
-	// Build a map[string]json.RawMessage for the hooks object.
+func encodeHooks(hooks map[string][]json.RawMessage) (json.RawMessage, error) {
 	obj := make(map[string]json.RawMessage, len(hooks))
 	for k, v := range hooks {
 		b, err := json.Marshal(v)
@@ -191,18 +213,19 @@ func encodeHooks(hooks map[string][]HookEntry) (json.RawMessage, error) {
 }
 
 // hasOrchardEntry reports whether list already contains an entry that posts to
-// orchard on the given port.
-func hasOrchardEntry(list []HookEntry, port int) bool {
+// Orchard on the given port. It searches the raw JSON for the host:port string,
+// which works for both the old command format and the new http format.
+func hasOrchardEntry(list []json.RawMessage, port int) bool {
 	marker := fmt.Sprintf("localhost:%d", port)
-	for _, e := range list {
-		if e.Type == "command" && containsSubstring(e.Command, marker) {
+	for _, raw := range list {
+		if containsSubstring(string(raw), marker) {
 			return true
 		}
 	}
 	return false
 }
 
-// containsSubstring reports whether s contains sub (avoids importing strings).
+// containsSubstring reports whether s contains sub.
 func containsSubstring(s, sub string) bool {
 	if len(sub) == 0 {
 		return true
