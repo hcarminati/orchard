@@ -17,6 +17,14 @@ type Config struct {
 	// MaxTokens is the monthly token cap. When set, token display shows
 	// "used/max". Zero means no cap is configured.
 	MaxTokens int
+	// WatchdogMinutes is the number of minutes without any tool call before a
+	// running agent is considered stuck. A yellow ⏱ badge appears at this
+	// threshold; a red ⏱⏱ badge appears at 2×. Zero disables the watchdog.
+	WatchdogMinutes int
+	// CostAlert is the per-session USD threshold. When a session's estimated
+	// cost exceeds this value, an amber banner is shown above the footer.
+	// Zero disables cost alerts.
+	CostAlert float64
 }
 
 // LoadConfig reads ~/.config/orchard/config.toml and returns the parsed settings.
@@ -58,6 +66,14 @@ func LoadConfig() (Config, error) {
 		case "max_tokens":
 			if n, err := strconv.Atoi(val); err == nil && n >= 0 {
 				cfg.MaxTokens = n
+			}
+		case "watchdog_minutes":
+			if n, err := strconv.Atoi(val); err == nil && n >= 0 {
+				cfg.WatchdogMinutes = n
+			}
+		case "cost_alert":
+			if n, err := strconv.ParseFloat(val, 64); err == nil && n >= 0 {
+				cfg.CostAlert = n
 			}
 		}
 	}

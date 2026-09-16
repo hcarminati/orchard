@@ -282,3 +282,70 @@ func TestLoadExpanded_InvalidJSON(t *testing.T) {
 		t.Errorf("expected empty map on bad JSON, got %v", got)
 	}
 }
+
+func TestLoadConfig_ParsesWatchdogMinutes(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	cfgDir := filepath.Join(dir, ".config", "orchard")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte("watchdog_minutes = 10\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.WatchdogMinutes != 10 {
+		t.Errorf("expected watchdog_minutes=10, got %v", cfg.WatchdogMinutes)
+	}
+}
+
+func TestLoadConfig_ParsesCostAlert(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	cfgDir := filepath.Join(dir, ".config", "orchard")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte("cost_alert = 5.50\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.CostAlert != 5.50 {
+		t.Errorf("expected cost_alert=5.50, got %v", cfg.CostAlert)
+	}
+}
+
+func TestLoadConfig_AllFields(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	cfgDir := filepath.Join(dir, ".config", "orchard")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "budget = 300\nmax_tokens = 5000000\nwatchdog_minutes = 10\ncost_alert = 5.5\n"
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Budget != 300 {
+		t.Errorf("expected budget=300, got %v", cfg.Budget)
+	}
+	if cfg.MaxTokens != 5_000_000 {
+		t.Errorf("expected max_tokens=5000000, got %v", cfg.MaxTokens)
+	}
+	if cfg.WatchdogMinutes != 10 {
+		t.Errorf("expected watchdog_minutes=10, got %v", cfg.WatchdogMinutes)
+	}
+	if cfg.CostAlert != 5.5 {
+		t.Errorf("expected cost_alert=5.5, got %v", cfg.CostAlert)
+	}
+}

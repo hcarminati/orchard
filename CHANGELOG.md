@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-05-25
+
+### Added
+- config.toml support: `watchdog_minutes` and `cost_alert` fields in `~/.config/orchard/config.toml`
+- Watchdog timer: when a running agent makes no tool call for `watchdog_minutes`, a yellow `⏱` badge appears on its tree row; after `2×watchdog_minutes` the badge escalates to red `⏱⏱`; the badge clears automatically on new activity
+- Cost alert banner: when a session's estimated cost exceeds `cost_alert`, an amber one-line banner appears above the footer; dismiss with `esc`
+- Fuzzy search (`/`): press `/` to open a search bar in the footer; type to filter the events list by tool name, event type, or content; `esc` or `enter` closes the bar
+- Terminal bell: `\a` fires when a session reaches Done or Error state (once per session)
+
 ## [0.7.0] - 2026-05-25
 
 ### Added

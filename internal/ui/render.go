@@ -194,6 +194,55 @@ func (m Model) renderCostWithBudget(totalCost float64, borderColor lipgloss.Colo
 	return lipgloss.NewStyle().Foreground(costColor).Render(costStr + "/" + budgetStr)
 }
 
+// renderCostAlertBanner returns a one-line amber banner when the focused
+// session's cost exceeds costAlert and the user hasn't dismissed it.
+// Returns "" when the alert is not triggered or the threshold is disabled.
+func (m Model) renderCostAlertBanner() string {
+	if m.costAlert <= 0 {
+		return ""
+	}
+	node := m.focusedNode()
+	if node == nil {
+		return ""
+	}
+	// Walk up to the root session so the cost is for the whole session.
+	rootID := node.ID
+	for {
+		n := m.agents.Nodes[rootID]
+		if n == nil || n.ParentID == "" {
+			break
+		}
+		rootID = n.ParentID
+	}
+	if m.costAlertDismiss[rootID] {
+		return ""
+	}
+	sessionCost := m.subtreeCost(rootID)
+	if sessionCost <= m.costAlert {
+		return ""
+	}
+	msg := fmt.Sprintf("⚠ Cost alert: session cost %s exceeded threshold %s   esc to dismiss",
+		formatCost(sessionCost), formatCost(m.costAlert))
+	banner := lipgloss.NewStyle().
+		Foreground(colorYellow).
+		Width(m.width).
+		Render(" " + msg)
+	return banner
+}
+
+// renderSearchBar returns a one-line search input bar when the search is open.
+func (m Model) renderSearchBar() string {
+	if !m.searchOpen {
+		return ""
+	}
+	cursor := lipgloss.NewStyle().Foreground(colorAccent).Render("█")
+	query := lipgloss.NewStyle().Foreground(colorFg).Render(m.searchQuery)
+	prefix := lipgloss.NewStyle().Foreground(colorMuted).Render("/")
+	bar := " " + prefix + query + cursor
+	gap := max(0, m.width-lipgloss.Width(bar))
+	return bar + strings.Repeat(" ", gap)
+}
+
 // loopBadge returns a warning string when a node is stuck in a tool-call loop,
 // empty string otherwise. The badge shows the tool name and repetition count
 // so the developer can see at a glance what is repeating.
@@ -203,6 +252,23 @@ func loopBadge(n *agent.Node) string {
 	}
 	label := fmt.Sprintf("⚠ loop×%d", n.ConsecutiveTools)
 	return lipgloss.NewStyle().Foreground(colorYellow).Bold(true).Render(label)
+}
+
+// watchdogBadge returns a badge string for the watchdog timer state.
+// Returns "⏱" (amber) at the first threshold and "⏱⏱" (red) at the second.
+func (m Model) watchdogBadge(nodeID string) string {
+	count := m.watchdogFired[nodeID]
+	switch count {
+	case 1:
+		return lipgloss.NewStyle().Foreground(colorYellow).Bold(true).Render("⏱")
+	case 2:
+		return lipgloss.NewStyle().Foreground(colorRed).Bold(true).Render("⏱⏱")
+	default:
+		if count > 2 {
+			return lipgloss.NewStyle().Foreground(colorRed).Bold(true).Render("⏱⏱")
+		}
+		return ""
+	}
 }
 
 // shortToolName returns a compact display label for a tool name.
@@ -326,6 +392,11 @@ func (m Model) renderFooter() string {
 		return " " + msg + strings.Repeat(" ", gap)
 	}
 
+	// Search bar replaces the normal footer while search is open.
+	if m.searchOpen {
+		return m.renderSearchBar()
+	}
+
 	content := " " + bind("j/k", "navigate")
 	if m.timelineMode {
 		content += bind("t", "tree view")
@@ -342,7 +413,7 @@ func (m Model) renderFooter() string {
 	if len(rightTabs) > 1 {
 		content += bind("[/]", "switch tab")
 	}
-	content += bind("tab", "switch panel") + bind("q", "quit")
+	content += bind("/", "search") + bind("tab", "switch panel") + bind("q", "quit")
 
 	// [d] hide — only for top-level non-running nodes in the agents panel, outside hidden view.
 	if m.activePanel == panelAgents && m.statusFilter != filterHidden {
@@ -773,6 +844,9 @@ func (m Model) agentsContent() string {
 			if n.Status == agent.StatusError && n.ErrorMsg != "" {
 				nameContent += " " + lipgloss.NewStyle().Foreground(colorRed).Render("✗ "+n.ErrorMsg)
 			} else {
+				if wb := m.watchdogBadge(n.ID); wb != "" {
+					nameContent += "  " + wb
+				}
 				if badge := loopBadge(n); badge != "" {
 					nameContent += "  " + badge
 				} else if pills := nodePills(n); pills != "" {
@@ -810,6 +884,9 @@ func (m Model) agentsContent() string {
 		if n.Status == agent.StatusError && n.ErrorMsg != "" {
 			nameContent += " " + lipgloss.NewStyle().Foreground(colorRed).Render("✗ "+n.ErrorMsg)
 		} else {
+			if wb := m.watchdogBadge(n.ID); wb != "" {
+				nameContent += "  " + wb
+			}
 			if badge := loopBadge(n); badge != "" {
 				nameContent += "  " + badge
 			} else if pills := nodePills(n); pills != "" {
@@ -921,12 +998,30 @@ func (m Model) eventsContent() string {
 		return next < len(node.Events) && isAbsorbedPermission(node.Events, next)
 	}
 
+	// searchFilter returns true if the event matches the current search query.
+	// Empty query matches all events.
+	searchFilter := func(e agent.Event) bool {
+		if m.searchQuery == "" {
+			return true
+		}
+		q := strings.ToLower(m.searchQuery)
+		return strings.Contains(strings.ToLower(e.Tool), q) ||
+			strings.Contains(strings.ToLower(e.Type), q) ||
+			strings.Contains(strings.ToLower(e.Input), q) ||
+			strings.Contains(strings.ToLower(e.Response), q) ||
+			strings.Contains(strings.ToLower(e.Message), q)
+	}
+
 	home, _ := os.UserHomeDir()
 	var allLines []string
 	for idx, e := range node.Events {
 		// Hidden events (absorbed PermissionRequests and internal sentinels)
 		// are not rendered — skip them entirely.
 		if isHiddenEvent(node.Events, idx) {
+			continue
+		}
+		// Search filter: skip events that don't match the current query.
+		if !searchFilter(e) {
 			continue
 		}
 		isSelected := idx == m.eventCursor
