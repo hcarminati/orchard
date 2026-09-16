@@ -302,9 +302,18 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 		replay.Run(nodes, eventCh, replay.Options{Speed: *speed}, done)
 	}()
 
-	// Start the TUI with empty initial nodes — events arrive through the channel.
+	// Seed the TUI with the tree structure (no events) so parent-child
+	// relationships are correct before the first event arrives.
+	// Events are stripped here because they will arrive through the channel.
+	seedNodes := make([]agent.Node, len(nodes))
+	for i, n := range nodes {
+		n.Events = nil
+		n.Status = agent.StatusDone
+		seedNodes[i] = n
+	}
+
 	p := tea.NewProgram(
-		ui.New(nil, eventCh, "", nil, nil, 0, 0, 0, 0),
+		ui.New(seedNodes, eventCh, "", nil, nil, 0, 0, 0, 0),
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),
 	)
@@ -737,8 +746,17 @@ func runReplaySession(s history.SessionMeta, stdout, stderr io.Writer) int {
 		replay.Run(nodes, eventCh, replay.Options{Speed: 1.0}, done)
 	}()
 
+	// Seed the TUI with the tree structure (no events) so parent-child
+	// relationships are correct before the first event arrives.
+	seedNodes := make([]agent.Node, len(nodes))
+	for i, n := range nodes {
+		n.Events = nil
+		n.Status = agent.StatusDone
+		seedNodes[i] = n
+	}
+
 	p := tea.NewProgram(
-		ui.New(nil, eventCh, "", nil, nil, 0, 0, 0, 0),
+		ui.New(seedNodes, eventCh, "", nil, nil, 0, 0, 0, 0),
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),
 	)
