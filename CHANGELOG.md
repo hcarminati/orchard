@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-05-25
+
+### Added
+- Comprehensive README.md: full feature list, ASCII art, keybindings table, quick start, architecture overview, install methods, common questions
+- `install.sh`: curl-installable shell script with platform detection, checksum verification, sudo-aware binary placement
+- `Formula/orchard.rb`: Homebrew formula template for multi-platform binary distribution via `brew tap hcarminati/tap`
+- `docs/architecture.md`: full internal architecture — package map, data flow diagram, Bubbletea/Lipgloss patterns, testing approach
+- `docs/configuration.md`: complete config reference for all config.toml fields, hidden.json, state.json, and environment variables
+- `docs/getting-started.md`: step-by-step onboarding from install through first session, split-pane setup for tmux/VS Code/iTerm2
+- Updated `CONTRIBUTING.md`: expanded with test patterns, feature checklist, package boundary rules, design principle
+
 ## [0.9.0] - 2026-05-25
 
 ### Added
