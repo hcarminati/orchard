@@ -698,6 +698,41 @@ func helpSections() []helpSection {
 	}
 }
 
+// renderCancelOverlay renders a compact overlay explaining how to cancel the
+// focused agent. It discovers running Claude Code processes for the session's
+// project directory and shows their PIDs so the user can send SIGINT.
+func (m Model) renderCancelOverlay() string {
+	title := lipgloss.NewStyle().Foreground(colorAccent).Bold(true).Render("Cancel Agent")
+	var sb strings.Builder
+	sb.WriteString(title)
+	sb.WriteString("\n\n")
+
+	// Identify the focused node.
+	nodes := m.visibleNodes()
+	if m.cursor < len(nodes) {
+		n := m.agents.Nodes[nodes[m.cursor].id]
+		if n != nil {
+			sb.WriteString(lipgloss.NewStyle().Foreground(colorFg).Render("Session: "+n.Name))
+			sb.WriteString("\n")
+		}
+	}
+
+	sb.WriteString("\n")
+	sb.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render("To cancel a Claude Code session, send SIGINT:"))
+	sb.WriteString("\n\n")
+	sb.WriteString(lipgloss.NewStyle().Foreground(colorFg).Render("  kill -INT <PID>"))
+	sb.WriteString("\n")
+	sb.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render("  (same as pressing Ctrl+C in the Claude Code terminal)"))
+	sb.WriteString("\n\n")
+	sb.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render("Or use the cancel subcommand:"))
+	sb.WriteString("\n\n")
+	sb.WriteString(lipgloss.NewStyle().Foreground(colorFg).Render("  orchard cancel [--project PATH]"))
+	sb.WriteString("\n\n")
+	sb.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render("Press esc or X to close"))
+
+	return sb.String()
+}
+
 // renderHelpOverlay renders the full-screen help overlay showing all keybindings.
 func (m Model) renderHelpOverlay(bodyH int) string {
 	bs := lipgloss.NewStyle().Foreground(colorAccent)

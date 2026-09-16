@@ -23,6 +23,7 @@ import (
 	"github.com/hcarminati/orchard/internal/doctor"
 	"github.com/hcarminati/orchard/internal/history"
 	"github.com/hcarminati/orchard/internal/hooks"
+	"github.com/hcarminati/orchard/internal/process"
 	"github.com/hcarminati/orchard/internal/replay"
 	"github.com/hcarminati/orchard/internal/session"
 	"github.com/hcarminati/orchard/internal/setup"
@@ -47,6 +48,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 			return runReplay(args[1:], stdout, stderr)
 		case "history":
 			return runHistory(args[1:], stdout, stderr)
+		case "cancel":
+			return runCancel(args[1:], stdout, stderr)
 		case "setup":
 			return runSetup(args[1:], stdout, stderr)
 		case "doctor":
@@ -397,6 +400,63 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	if !doctor.AllPass(checks) {
 		return 1
 	}
+	return 0
+}
+
+// runCancel handles the `orchard cancel` subcommand.
+// It discovers Claude Code processes for the project and sends SIGINT.
+func runCancel(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("orchard cancel", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.Usage = func() {
+		fmt.Fprintln(stderr, "usage: orchard cancel [--project PATH] [--dry-run]")
+		fmt.Fprintln(stderr, "")
+		fmt.Fprintln(stderr, "Cancels running Claude Code sessions for a project by sending SIGINT.")
+		fmt.Fprintln(stderr, "")
+		fmt.Fprintln(stderr, "flags:")
+		fs.PrintDefaults()
+	}
+
+	project := fs.String("project", "", "project working directory (default: current directory)")
+	dryRun := fs.Bool("dry-run", false, "show which processes would be cancelled without sending the signal")
+
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	cwd := *project
+	if cwd == "" {
+		var err error
+		cwd, err = os.Getwd()
+		if err != nil {
+			fmt.Fprintf(stderr, "error: could not determine working directory: %v\n", err)
+			return 1
+		}
+	}
+
+	procs, err := process.FindForCWD(cwd)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: could not discover processes: %v\n", err)
+		return 1
+	}
+
+	if len(procs) == 0 {
+		fmt.Fprintln(stdout, "no Claude Code processes found for this project.")
+		return 0
+	}
+
+	for _, p := range procs {
+		if *dryRun {
+			fmt.Fprintf(stdout, "would cancel: %s\n", p.String())
+			continue
+		}
+		if err := process.SendInterrupt(p.PID); err != nil {
+			fmt.Fprintf(stderr, "error cancelling %s: %v\n", p.String(), err)
+		} else {
+			fmt.Fprintf(stdout, "cancelled: %s\n", p.String())
+		}
+	}
+
 	return 0
 }
 
