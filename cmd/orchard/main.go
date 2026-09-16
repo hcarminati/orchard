@@ -20,6 +20,7 @@ import (
 
 	"github.com/hcarminati/orchard/internal/agent"
 	"github.com/hcarminati/orchard/internal/catalog"
+	"github.com/hcarminati/orchard/internal/diff"
 	"github.com/hcarminati/orchard/internal/config"
 	"github.com/hcarminati/orchard/internal/doctor"
 	"github.com/hcarminati/orchard/internal/history"
@@ -58,6 +59,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 			return runAgents(args[1:], stdout, stderr)
 		case "skills":
 			return runSkills(args[1:], stdout, stderr)
+		case "diff":
+			return runDiff(args[1:], stdout, stderr)
 		case "setup":
 			return runSetup(args[1:], stdout, stderr)
 		case "doctor":
@@ -408,6 +411,63 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	if !doctor.AllPass(checks) {
 		return 1
 	}
+	return 0
+}
+
+// runDiff handles the `orchard diff` subcommand.
+// It compares two sessions and prints what changed.
+func runDiff(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("orchard diff", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.Usage = func() {
+		fmt.Fprintln(stderr, "usage: orchard diff <session-a.jsonl> <session-b.jsonl>")
+		fmt.Fprintln(stderr, "")
+		fmt.Fprintln(stderr, "Compare two Claude Code sessions and show what changed:")
+		fmt.Fprintln(stderr, "agent count, duration, cost, tool usage, skill triggers.")
+		fmt.Fprintln(stderr, "")
+		fmt.Fprintln(stderr, "flags:")
+		fs.PrintDefaults()
+	}
+
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	if fs.NArg() != 2 {
+		fs.Usage()
+		return 2
+	}
+
+	pathA, pathB := fs.Arg(0), fs.Arg(1)
+
+	nodesA, err := session.LoadFile(pathA)
+	if err != nil {
+		fmt.Fprintf(stderr, "error loading %s: %v\n", pathA, err)
+		return 1
+	}
+	nodesB, err := session.LoadFile(pathB)
+	if err != nil {
+		fmt.Fprintf(stderr, "error loading %s: %v\n", pathB, err)
+		return 1
+	}
+
+	d := diff.Compare(nodesA, nodesB)
+
+	// Set session IDs for display.
+	if len(nodesA) > 0 {
+		d.A.ID = nodesA[0].ID
+		if len(d.A.ID) > 8 {
+			d.A.ID = d.A.ID[:8]
+		}
+	}
+	if len(nodesB) > 0 {
+		d.B.ID = nodesB[0].ID
+		if len(d.B.ID) > 8 {
+			d.B.ID = d.B.ID[:8]
+		}
+	}
+
+	fmt.Fprint(stdout, d.Format())
 	return 0
 }
 
